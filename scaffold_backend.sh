@@ -6,9 +6,9 @@ set -euo pipefail
 ROOT="${1:-backend}"
 COMPONENTS=(
   "c1_document_understanding:c1:8001:C1 – Document Understanding"
-  "c2_case_analysis:c2:8002:C2 – Case Analysis"
-  "c3_legal_qa:c3:8003:C3 – Legal Q&A"
-  "c4_misinformation:c4:8004:C4 – Misinformation Detection"
+  "c2_case_intelligence:c2:8002:C2 – Legal Document Intelligence"
+  "c3_misinformation:c3:8003:C3 – Misinformation Detection"
+  "c_argumentation:c_argumentation:8004:C4 – Multi-Agent Argumentation Engine"
 )
 
 mkdir -p "$ROOT" && cd "$ROOT"
@@ -82,9 +82,9 @@ EOF
 
 cat > CODEOWNERS <<'EOF'
 /app/components/c1_document_understanding/   @member1
-/app/components/c2_case_analysis/            @member2
-/app/components/c3_legal_qa/                 @member3
-/app/components/c4_misinformation/           @member4
+/app/components/c2_case_intelligence/          @member2
+/app/components/c3_misinformation/           @member3
+/app/components/c_argumentation/             @member4
 /app/core/                                   @lead
 /app/shared/                                 @lead
 /scripts/                                    @lead
@@ -109,13 +109,14 @@ touch app/__init__.py app/core/__init__.py app/shared/__init__.py \
       app/components/__init__.py
 
 cat > app/registry.py <<'EOF'
-# One line per component. Comment a line out to disable a component.
-COMPONENTS = [
-    "app.components.c1_document_understanding",
-    "app.components.c2_case_analysis",
-    "app.components.c3_legal_qa",
-    "app.components.c4_misinformation",
-]
+# module path -> URL prefix segment. c_argumentation doesn't follow the "cN_*"
+# pattern, so prefixes are explicit rather than derived from the folder name.
+COMPONENTS = {
+    "app.components.c1_document_understanding": "c1",
+    "app.components.c2_case_intelligence": "c2",
+    "app.components.c3_misinformation": "c3",
+    "app.components.c_argumentation": "c_argumentation",
+}
 EOF
 
 cat > app/main.py <<'EOF'
@@ -143,13 +144,12 @@ async def health():
     return {"status": "ok"}
 
 
-for path in COMPONENTS:
-    prefix = "/api/v1/" + path.split(".")[-1].split("_")[0]  # -> /api/v1/c1
+for module_path, prefix in COMPONENTS.items():
     try:
-        module = import_module(f"{path}.router")
-        app.include_router(module.router, prefix=prefix)
+        module = import_module(f"{module_path}.router")
+        app.include_router(module.router, prefix=f"/api/v1/{prefix}")
     except Exception as e:  # a broken component must not crash the others
-        print(f"[WARN] component {path} not loaded: {e}")
+        print(f"[WARN] component {module_path} not loaded: {e}")
 EOF
 
 cat > app/core/config.py <<'EOF'
@@ -390,7 +390,7 @@ Expose thin async functions + shared contract types here."""
 EOF
 
   cat > "$base/config.py" <<EOF
-# $short-specific settings (prefix env vars with ${short^^}_)
+# $short-specific settings (prefix env vars with $(printf '%s' "$short" | tr '[:lower:]' '[:upper:]')_)
 EOF
   touch "$base/schemas.py" "$base/models.py" "$base/repository.py" "$base/service.py"
 
@@ -415,9 +415,9 @@ done
 
 # component-specific subfolders
 mkdir -p app/components/c1_document_understanding/{pipeline,ml}
-mkdir -p app/components/c2_case_analysis/{pipeline,agents,evaluation}
-mkdir -p app/components/c3_legal_qa/{rag,agents,memory}
-mkdir -p app/components/c4_misinformation/{pipeline,agents,evaluation}
+mkdir -p app/components/c2_case_intelligence/{pipeline,agents,evaluation}
+mkdir -p app/components/c3_misinformation/{pipeline,agents,evaluation}
+mkdir -p app/components/c_argumentation/{pipeline,agents,evaluation}
 for d in app/components/*/{pipeline,ml,agents,evaluation,rag,memory}; do
   [ -d "$d" ] && touch "$d/__init__.py"
 done

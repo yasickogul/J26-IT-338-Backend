@@ -25,7 +25,7 @@ cp BACKEND_ARCHITECTURE.md backend/
 cd backend
 ```
 
-This creates the full folder tree from the architecture file: `app/core`, `app/shared`, the four `app/components/cN_*` folders (each with `router.py`, `dev_app.py`, `public.py`, `schemas.py`, `models.py`, `service.py`, `repository.py`, `tests/`, etc.), `requirements.txt`, `.env.example`, `.cursorrules`, `CODEOWNERS` and a ping test per component.
+This creates the full folder tree from the architecture file: `app/core`, `app/shared`, the four component folders under `app/components/` (each with `router.py`, `dev_app.py`, `public.py`, `schemas.py`, `models.py`, `service.py`, `repository.py`, `tests/`, etc.), `requirements.txt`, `.env.example`, `.cursorrules`, `CODEOWNERS` and a ping test per component.
 
 ### A3. Virtual environment and dependencies
 
@@ -36,7 +36,7 @@ python -m venv .venv
 pip install -r requirements-dev.txt
 ```
 
-Install your LLM provider package when you pick one (e.g. `pip install langchain-anthropic` or `langchain-openai`). Heavy ML packages (`torch`, `transformers`, `sentence-transformers`, `langchain-huggingface`) are best installed by the member who needs them (C1, C2, C4) to keep everyone's setup light.
+Install your LLM provider package when you pick one (e.g. `pip install langchain-anthropic` or `langchain-openai`). Heavy ML packages (`torch`, `transformers`, `sentence-transformers`, `langchain-huggingface`) are best installed by the member who needs them (e.g. C1, C2, C3) to keep everyone's setup light.
 
 ### A4. Set up Neon
 
@@ -48,7 +48,7 @@ Install your LLM provider package when you pick one (e.g. `pip install langchain
    CREATE SCHEMA IF NOT EXISTS c1;
    CREATE SCHEMA IF NOT EXISTS c2;
    CREATE SCHEMA IF NOT EXISTS c3;
-   CREATE SCHEMA IF NOT EXISTS c4;
+   CREATE SCHEMA IF NOT EXISTS c_arg;
    ```
 3. **Create one Neon branch per member** (Branches → New branch, e.g. `dev-member1` … `dev-member4`). Each branch is a copy-on-write copy of `main`, so experiments never collide.
 4. For each branch, copy the connection strings from **Connect**:
@@ -81,7 +81,7 @@ Edit `alembic.ini`:
 
 ```ini
 script_location = alembic
-version_locations = app/components/c1_document_understanding/migrations/versions app/components/c2_case_analysis/migrations/versions app/components/c3_legal_qa/migrations/versions app/components/c4_misinformation/migrations/versions app/shared/migrations/versions
+version_locations = app/components/c1_document_understanding/migrations/versions app/components/c2_case_intelligence/migrations/versions app/components/c3_misinformation/migrations/versions app/components/c_argumentation/migrations/versions app/shared/migrations/versions
 ```
 
 Replace `alembic/env.py`'s metadata and URL parts with:
@@ -96,9 +96,9 @@ config.set_main_option("sqlalchemy.url", settings.database_url_direct)
 # Import each component's Base as soon as that component has models.
 # Each component defines:  Base = declarative_base(metadata=MetaData(schema="cN"))
 from app.components.c1_document_understanding.models import Base as C1Base   # noqa
-from app.components.c2_case_analysis.models import Base as C2Base             # noqa
-from app.components.c3_legal_qa.models import Base as C3Base                  # noqa
-from app.components.c4_misinformation.models import Base as C4Base            # noqa
+from app.components.c2_case_intelligence.models import Base as C2Base             # noqa
+from app.components.c3_misinformation.models import Base as C3Base                  # noqa
+from app.components.c_argumentation.models import Base as C4Base              # noqa
 
 target_metadata = [C1Base.metadata, C2Base.metadata, C3Base.metadata, C4Base.metadata]
 
@@ -121,10 +121,10 @@ and pass `include_schemas=True, include_name=include_name` inside `context.confi
 # first migration for the component (starts its own branch)
 alembic -x schema=c2 revision --autogenerate -m "create c2 tables" \
   --head=base --branch-label=c2 \
-  --version-path=app/components/c2_case_analysis/migrations/versions
+  --version-path=app/components/c2_case_intelligence/migrations/versions
 
 # later migrations
-alembic -x schema=c2 revision --autogenerate -m "add whatif_runs" --head=c2@head
+alembic -x schema=c2 revision --autogenerate -m "add evidence_gaps table" --head=c2@head
 
 # apply only your branch
 alembic upgrade c2@head
@@ -159,7 +159,7 @@ uvicorn app.main:app --reload --port 8000
 
 - API docs (Swagger): http://localhost:8000/docs
 - Health check: http://localhost:8000/health
-- Component ping: http://localhost:8000/api/v1/c1/ping (also `c2`, `c3`, `c4`)
+- Component ping: http://localhost:8000/api/v1/c1/ping (also `c2`, `c3`, `c_argumentation`)
 
 If a component fails to import, the app still starts and prints `[WARN] component ... not loaded`.
 
@@ -168,9 +168,9 @@ If a component fails to import, the app still starts and prints `[WARN] componen
 | Component | Command | Port |
 |---|---|---|
 | C1 | `uvicorn app.components.c1_document_understanding.dev_app:app --reload --port 8001` | 8001 |
-| C2 | `uvicorn app.components.c2_case_analysis.dev_app:app --reload --port 8002` | 8002 |
-| C3 | `uvicorn app.components.c3_legal_qa.dev_app:app --reload --port 8003` | 8003 |
-| C4 | `uvicorn app.components.c4_misinformation.dev_app:app --reload --port 8004` | 8004 |
+| C2 | `uvicorn app.components.c2_case_intelligence.dev_app:app --reload --port 8002` | 8002 |
+| C3 | `uvicorn app.components.c3_misinformation.dev_app:app --reload --port 8003` | 8003 |
+| C4 | `uvicorn app.components.c_argumentation.dev_app:app --reload --port 8004` | 8004 |
 
 Swagger for each is at `http://localhost:<port>/docs`.
 
@@ -178,7 +178,7 @@ Swagger for each is at `http://localhost:<port>/docs`.
 
 ```bash
 pytest -q                                          # everything
-pytest app/components/c2_case_analysis -q          # only your component
+pytest app/components/c2_case_intelligence -q          # only your component
 ruff check . && ruff format .
 ```
 
@@ -200,7 +200,7 @@ In the frontend `.env.local`:
 NEXT_PUBLIC_API_URL=http://localhost:8000
 ```
 
-Call endpoints like `fetch(`${process.env.NEXT_PUBLIC_API_URL}/api/v1/c3/conversations`, ...)`. CORS already allows `http://localhost:3000` through `CORS_ORIGINS` in the backend `.env`. For streaming (C3), read the SSE endpoint with `fetch` + `ReadableStream` (or `EventSource` for GET-based streams).
+Call endpoints like `fetch(`${process.env.NEXT_PUBLIC_API_URL}/api/v1/c2/reports`, ...)`. CORS already allows `http://localhost:3000` through `CORS_ORIGINS` in the backend `.env`. For streaming (e.g. debate turns from `c_argumentation`), read the SSE endpoint with `fetch` + `ReadableStream` (or `EventSource` for GET-based streams).
 
 ### B6. Optional: Docker
 
@@ -235,9 +235,9 @@ Then `DATABASE_URL=postgresql+asyncpg://app:app@localhost:5432/legal`.
 |---|---|
 | **Lead / everyone (Week 0)** | Implement `HybridRetriever`, shared corpus tables + migration, ingest sample data, JWT dependency in `core/security.py` |
 | **C1** | `POST /documents` upload, `pdf_extractor.py` (PyMuPDF), `StructuredLegalInfo` extraction (LLM-based baseline, then classifier/NER models) |
-| **C2** | Fact extraction + query builder, `ranker.py` with the weighted percentage score, explanation chain with structured output |
-| **C3** | Conversations/messages tables, RAG chain with citations, SSE streaming endpoint |
-| **C4** | Claim extractor, verifier with three verdicts (default to Insufficient Evidence), `/verifications` endpoints |
+| **C2** | `POST /reports` upload + `document_processor.py`, `info_extractor.py` (case info, parties, issues), then `report_builder.py` assembling the `CivilCaseIntelligenceReport` (retrieval and ranking after) |
+| **C3** | `ocr_extractor.py` + `language_detector.py` for English/Sinhala/Tamil, claim extractor, `verifier.py` returning True/False/Misleading |
+| **C4** | `case_intake.py`, Plaintiff/Defense agents, `debate_orchestrator.py` (LangGraph loop), then `argument_graph_builder.py` and the Auditor |
 
 Until teammates finish, **develop against mocks** of their `public.py` and the shared contracts.
 
@@ -268,13 +268,13 @@ cp .env.example .env
 
 # run
 uvicorn app.main:app --reload --port 8000                                   # full API
-uvicorn app.components.c2_case_analysis.dev_app:app --reload --port 8002    # one component
+uvicorn app.components.c2_case_intelligence.dev_app:app --reload --port 8002    # one component
 
 # database
 alembic upgrade c2@head                     # apply your component's migrations
 alembic -x schema=c2 revision --autogenerate -m "msg" --head=c2@head
 
 # quality
-pytest app/components/c2_case_analysis -q
+pytest app/components/c2_case_intelligence -q
 ruff check . && ruff format .
 ```
