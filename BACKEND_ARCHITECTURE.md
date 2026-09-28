@@ -6,7 +6,7 @@
 
 ## 1. Project Summary
 
-An AI-powered legal assistance platform for **Sri Lankan civil law**. Users submit a legal problem or upload legal documents; the system understands the input, retrieves relevant Sri Lankan legal sources and precedents, analyses the case, answers legal questions, verifies legal claims, and returns **structured, explainable, source-cited** results.
+An AI-powered legal assistance platform for **Sri Lankan civil law**. Users submit a legal problem or upload legal documents; the system understands the input, retrieves relevant Sri Lankan legal sources and precedents, generates case intelligence reports, verifies legal claims, simulates adversarial legal arguments, and returns **structured, explainable, source-cited** results.
 
 **Stack**
 
@@ -23,21 +23,16 @@ An AI-powered legal assistance platform for **Sri Lankan civil law**. Users subm
 | ORM / migrations | SQLAlchemy 2.x (async) + Alembic |
 | Validation | Pydantic v2 |
 
-**High-level flow**
-
-```
-User Input → Document/Claim Understanding (C1) → Legal Retrieval → Civil Case Analysis (C2)
-          → Legal Q&A (C3) / Claim Verification (C4) → Explainable Results
-```
+**The platform is NOT one linear pipeline.** It is four independent components, each with its own input, its own output, and its own API. A user (or the frontend) can call any one of them directly. Some components *may optionally* use another component's output as extra context (e.g. C3 can be given a document already processed by C1), but none of them require it — each must work standalone on its own input.
 
 ### The four components
 
-| ID | Component | Owner | Purpose |
-|---|---|---|---|
-| C1 | Legal Document Classification & Information Extraction | Member 1 | Extract text from uploads, classify document type, run NER, output structured legal info |
-| C2 | Explainable Civil Case Analysis | Member 2 | Retrieve and rank relevant precedents, percentage relevance score, explanation, evidence gaps, what-if |
-| C3 | Citizen Legal Q&A Assistant | Member 3 | RAG chatbot answering legal questions with citations |
-| C4 | Legal Misinformation Detection | Member 4 | Verify a legal claim: Supported / Contradicted / Insufficient Evidence |
+| ID | Component | Owner | Input | Output |
+|---|---|---|---|---|
+| C1 | Legal Document Classification & Information Extraction | Member 1 | An uploaded legal document (PDF/text) or pasted text | `StructuredLegalInfo` — document type, entities, case type, claims, parties, evidence, court |
+| C2 | Legal Document Intelligence & Civil Case Insight Generation | Member 2 | A civil case document (uploaded PDF or pasted text) | A **Civil Case Intelligence Report**: case information, parties/positions, legal issues, evidence/information gaps, similar cases, relevant laws/precedents, explanations and citations |
+| C3 | AI-Powered Legal Misinformation Detection System | Member 3 | A legal claim as **text or an image** (OCR), in **English, Sinhala, or Tamil** | Per-claim verdict — **True / False / Misleading** — with explanation and cited sources |
+| C4 | Multi-Agent Legal Argumentation Engine | Member 4 | Case facts (structured input) | A structured **argument graph** (JSON nodes/edges) from a simulated Plaintiff-vs-Defense debate, audited for factual grounding |
 
 *(Replace "Member N" with real names/GitHub handles in `CODEOWNERS`.)*
 
@@ -59,23 +54,25 @@ One FastAPI application, but each component is a **self-contained module** that 
                       ┌─────────────▼─────────────┐
                       │   FastAPI  (app/main.py)   │
                       │  auth · CORS · logging     │
-                      └──┬─────────┬─────────┬─────┬┘
-             /api/v1/c1  │  /c2    │  /c3    │ /c4 │
-          ┌──────────────▼┐ ┌──────▼──────┐ ┌▼─────▼───────┐ ┌────────────┐
-          │ C1 Document   │ │ C2 Case     │ │ C3 Legal Q&A │ │ C4 Misinfo │
-          │ Understanding │ │ Analysis    │ │              │ │ Detection  │
-          └──────┬────────┘ └──────┬──────┘ └──────┬───────┘ └─────┬──────┘
+                      └──┬─────────┬─────────┬───────────────┬┘
+          /api/v1/c1     │  /c2    │  /c3    │  /c_argumentation
+          ┌──────────────▼┐ ┌──────▼──────┐ ┌▼─────────────┐ ┌▼──────────────┐
+          │ C1 Document   │ │ C2 Case     │ │ C3 Misinfo   │ │ C4 Argumen-   │
+          │ Understanding │ │ Analysis    │ │ Detection    │ │ tation Engine │
+          └──────┬────────┘ └──────┬──────┘ └──────┬───────┘ └─────┬─────────┘
                  │                 │               │               │
         ┌────────▼─────────────────▼───────────────▼───────────────▼───────┐
         │  app/core  (config, db, llm, embeddings)  +  app/shared          │
         │  (contracts, retrieval service, citation utils)                  │
         └────────────────────────────┬─────────────────────────────────────┘
                                      │
-                     ┌───────────────▼────────────────┐
-                     │ Neon PostgreSQL + pgvector      │
-                     │ schemas: shared · c1 · c2 · c3 · c4 │
-                     └────────────────────────────────┘
+                     ┌───────────────▼──────────────────┐
+                     │ Neon PostgreSQL + pgvector        │
+                     │ schemas: shared · c1 · c2 · c3 · c_arg │
+                     └────────────────────────────────────┘
 ```
+
+Each box above is independent: it accepts its own request and returns its own response. None of them sit *inside* another's request path — the arrows into `app/shared` are the only thing they have in common (the legal corpus and retrieval service), and that access is read-only.
 
 ---
 
@@ -143,77 +140,87 @@ backend/
 │       │   ├── tests/
 │       │   └── README.md
 │       │
-│       ├── c2_case_analysis/              # 👤 Member 2 ONLY
+│       ├── c2_case_intelligence/          # 👤 Member 2 ONLY
 │       │   ├── __init__.py
 │       │   ├── public.py
 │       │   ├── router.py                  # → /api/v1/c2
 │       │   ├── dev_app.py
 │       │   ├── config.py                  # scoring weights, top_k, thresholds
-│       │   ├── schemas.py
-│       │   ├── models.py                  # schema "c2"
+│       │   ├── schemas.py                 # incl. CivilCaseIntelligenceReport
+│       │   ├── models.py                  # schema "c2" (documents, reports, report_cases, ...)
 │       │   ├── repository.py
 │       │   ├── service.py
 │       │   ├── pipeline/
-│       │   │   ├── fact_extractor.py      # claim/fact extraction from current case
-│       │   │   ├── query_builder.py       # query representation
-│       │   │   ├── retriever.py           # uses shared.retrieval + case-level index
-│       │   │   ├── ranker.py              # relevance percentage scoring
-│       │   │   ├── comparator.py          # fact & evidence comparison
-│       │   │   ├── evidence_gap.py
-│       │   │   └── whatif.py
+│       │   │   ├── document_processor.py        # PDF/text extraction (PyMuPDF), cleaning, segmentation
+│       │   │   ├── info_extractor.py            # legal information extraction (case info, parties, issues, evidence, remedy)
+│       │   │   ├── insight_analyzer.py          # civil case insight analysis (issues, positions, information gaps)
+│       │   │   ├── query_builder.py             # query representation for retrieval
+│       │   │   ├── similar_case_retriever.py    # similar historical case retrieval (uses shared.retrieval)
+│       │   │   ├── ranker.py                    # relevance percentage scoring of similar cases
+│       │   │   ├── comparator.py                # fact & evidence comparison vs. similar cases
+│       │   │   ├── evidence_gap.py              # evidence/information gaps
+│       │   │   ├── law_precedent_retriever.py   # RAG over laws & precedents (uses shared.retrieval)
+│       │   │   └── report_builder.py            # assembles the Civil Case Intelligence Report
 │       │   ├── agents/
-│       │   │   ├── explanation_agent.py   # LangChain: explains why relevant
+│       │   │   ├── explanation_agent.py   # LangChain: grounded explanations with citations
 │       │   │   └── graph.py               # LangGraph workflow
 │       │   ├── prompts/
-│       │   ├── evaluation/                # precision/recall/F1, retrieval metrics
+│       │   ├── evaluation/                # extraction accuracy, precision/recall/F1, retrieval metrics
 │       │   ├── migrations/versions/       # branch "c2"
 │       │   ├── tests/
 │       │   └── README.md
 │       │
-│       ├── c3_legal_qa/                   # 👤 Member 3 ONLY
+│       ├── c3_misinformation/             # 👤 Member 3 ONLY
 │       │   ├── __init__.py
 │       │   ├── public.py
-│       │   ├── router.py                  # → /api/v1/c3  (supports SSE streaming)
+│       │   ├── router.py                  # → /api/v1/c3
 │       │   ├── dev_app.py
 │       │   ├── config.py
 │       │   ├── schemas.py
-│       │   ├── models.py                  # schema "c3" (conversations, messages)
+│       │   ├── models.py                  # schema "c3" (claims, verifications, media_inputs)
 │       │   ├── repository.py
 │       │   ├── service.py
-│       │   ├── rag/
-│       │   │   ├── query_rewriter.py      # follow-up question → standalone question
-│       │   │   ├── retriever.py           # uses shared.retrieval
-│       │   │   ├── context_builder.py
-│       │   │   └── answer_chain.py        # LangChain RAG chain
+│       │   ├── pipeline/
+│       │   │   ├── input_router.py        # routes text vs. image input
+│       │   │   ├── ocr_extractor.py       # image → text OCR (English/Sinhala/Tamil)
+│       │   │   ├── language_detector.py   # detects en / si / ta
+│       │   │   ├── translator.py          # normalizes si/ta text for retrieval, if needed
+│       │   │   ├── claim_extractor.py
+│       │   │   ├── concept_identifier.py
+│       │   │   ├── source_retriever.py    # uses shared.retrieval
+│       │   │   ├── comparator.py          # semantic / NLI evidence comparison
+│       │   │   └── verifier.py            # True / False / Misleading
 │       │   ├── agents/
-│       │   │   └── qa_agent.py            # LangGraph/LangChain agent with tools
-│       │   ├── memory/                    # conversation memory
+│       │   │   └── verification_agent.py
 │       │   ├── prompts/
+│       │   ├── evaluation/
 │       │   ├── migrations/versions/       # branch "c3"
 │       │   ├── tests/
 │       │   └── README.md
 │       │
-│       └── c4_misinformation/             # 👤 Member 4 ONLY
+│       └── c_argumentation/               # 👤 Member 4 ONLY
 │           ├── __init__.py
 │           ├── public.py
-│           ├── router.py                  # → /api/v1/c4
+│           ├── router.py                  # → /api/v1/c_argumentation
 │           ├── dev_app.py
 │           ├── config.py
 │           ├── schemas.py
-│           ├── models.py                  # schema "c4" (claims, verifications)
+│           ├── models.py                  # schema "c_arg" (cases, argument_nodes, argument_edges)
 │           ├── repository.py
 │           ├── service.py
 │           ├── pipeline/
-│           │   ├── claim_extractor.py
-│           │   ├── concept_identifier.py
-│           │   ├── source_retriever.py    # uses shared.retrieval
-│           │   ├── comparator.py          # semantic / NLI evidence comparison
-│           │   └── verifier.py            # Supported / Contradicted / Insufficient
+│           │   ├── case_intake.py             # parses submitted case facts
+│           │   ├── source_retriever.py        # uses shared.retrieval (see note in §6.4)
+│           │   ├── debate_orchestrator.py     # LangGraph turn-taking between Plaintiff/Defense
+│           │   ├── argument_graph_builder.py  # builds JSON node/edge graph from turns
+│           │   └── auditor_pipeline.py        # claim-vs-source check, strength scoring
 │           ├── agents/
-│           │   └── verification_agent.py
+│           │   ├── plaintiff_agent.py
+│           │   ├── defense_agent.py
+│           │   └── auditor_agent.py
 │           ├── prompts/
 │           ├── evaluation/
-│           ├── migrations/versions/       # branch "c4"
+│           ├── migrations/versions/       # branch "c_arg"
 │           ├── tests/
 │           └── README.md
 │
@@ -231,14 +238,14 @@ backend/
 
 ## 4. Isolation Rules (critical)
 
-1. **Own your folder only.** Member N edits only `app/components/cN_*/`. Never edit another component's folder.
-2. **No cross-imports of internals.** A component must NOT do `from app.components.c2_case_analysis.service import ...`. Allowed imports:
+1. **Own your folder only.** Each member edits only their own folder (`app/components/c1_document_understanding/`, `c2_case_intelligence/`, `c3_misinformation/`, or `c_argumentation/`). Never edit another component's folder.
+2. **No cross-imports of internals.** A component must NOT do `from app.components.c2_case_intelligence.service import ...`. Allowed imports:
    - `app.core.*`
    - `app.shared.*`
    - Another component's `public.py` (a thin facade; only functions/types listed there).
-3. **Cross-component data goes through contracts** in `app/shared/contracts/`. Example: C1's output is `StructuredLegalInfo`; C2, C3, and C4 consume that type, not C1's internal models.
+3. **Cross-component data goes through contracts** in `app/shared/contracts/`. Example: C1's output is `StructuredLegalInfo`; any other component that *chooses* to use a C1 document as context consumes that type, not C1's internal models. Using another component's output is always optional, never required.
 4. **Changes to `core/` or `shared/`** need a PR reviewed by all 4 members (or the team lead). If you need something new, open a PR that adds it — don't fork a private copy.
-5. **Database ownership:** each component has its own Postgres schema (`c1`, `c2`, `c3`, `c4`) and only writes to its own. The `shared` schema (legal corpus) is **read-only** for components; only `scripts/` ingestion writes to it.
+5. **Database ownership:** each component has its own Postgres schema (`c1`, `c2`, `c3`, `c_arg`) and only writes to its own. The `shared` schema (legal corpus) is **read-only** for components; only `scripts/` ingestion writes to it.
 6. **Migrations:** each component keeps its own Alembic branch (see §7). Never edit another component's migrations.
 7. **Dependencies:** add a new package in a small dedicated PR (or a component-level extras group in `pyproject.toml`, e.g. `[project.optional-dependencies] c2 = [...]`) to avoid merge conflicts.
 8. **Mocks first:** until another component is ready, develop against its **contract** with a mock (`tests/fixtures`). Never block on a teammate.
@@ -274,7 +281,8 @@ class LegalEntity(BaseModel):
     end: Optional[int] = None
 
 class StructuredLegalInfo(BaseModel):
-    """Output of C1; input to C2 / C3 / C4."""
+    """Output of C1. Optional context input for C2 / C4 (and C3 when checking a claim
+    that references an already-uploaded document)."""
     document_id: Optional[str] = None
     document_type: str                       # judgment | agreement | petition | other
     case_type: Optional[str] = None          # e.g. Employment
@@ -309,7 +317,7 @@ class RetrievedChunk(BaseModel):
 
 ### 5.3 `app/shared/retrieval` — Hybrid retrieval service
 
-Used by C2, C3, C4 so nobody re-implements retrieval.
+Used by C2, C3, and (optionally, see §6.4) C4, so nobody re-implements retrieval.
 
 ```python
 class HybridRetriever:
@@ -375,7 +383,8 @@ Ingestion (`scripts/ingest_*.py`): parse → clean → chunk (by section/paragra
 ```
 Upload (PDF/text) → PyMuPDF text extraction → preprocessing (clean, sentence split,
 language detect, normalize) → document classification → NER → information extraction
-→ StructuredLegalInfo → saved in c1 schema → returned / consumed by C2, C3, C4
+→ StructuredLegalInfo → saved in c1 schema → returned to the caller
+(other components may optionally fetch it via `public.py` if a request references a `document_id`)
 ```
 
 **Endpoints (`/api/v1/c1`)**
@@ -401,30 +410,90 @@ language detect, normalize) → document classification → NER → information 
 
 ---
 
-### 6.2 C2 — Explainable Civil Case Analysis
+### 6.2 C2 — Legal Document Intelligence & Civil Case Insight Generation
+
+**Purpose.** Takes a civil case document and produces one **Civil Case Intelligence Report**: what the case is about, who the parties are and what position each takes, the legal issues, what evidence or information is missing, which similar historical cases exist, which laws and precedents apply, and grounded explanations with citations.
 
 **Pipeline**
 
 ```
-Current case (form or StructuredLegalInfo) → claim/fact extraction → query representation
-→ hybrid retrieval (BM25 + pgvector) → candidate cases → legal relevance ranking
-→ relevance percentage → fact & evidence comparison → explanation generation
-→ evidence-gap analysis → (optional) what-if analysis
+Civil Case Document → Document Processing → Legal Information Extraction
+→ Civil Case Insight Analysis → Similar Historical Case Retrieval
+→ RAG for Laws & Precedents → Grounded Explanation → Civil Case Intelligence Report
 ```
+
+| Step | Module(s) in `pipeline/` or `agents/` | What it does |
+|---|---|---|
+| Document Processing | `document_processor.py` | PyMuPDF text extraction (OCR fallback for scanned PDFs), cleaning, sentence/section segmentation, language detection |
+| Legal Information Extraction | `info_extractor.py` | Extracts case type, court, case number, parties, claims, remedy requested, evidence mentioned, dates, legal references (NER + rules + LLM with structured output) |
+| Civil Case Insight Analysis | `insight_analyzer.py` | Identifies the legal issues, each party's position, and information gaps inside the document |
+| Similar Historical Case Retrieval | `query_builder.py`, `similar_case_retriever.py`, `ranker.py`, `comparator.py`, `evidence_gap.py` | Hybrid retrieval (BM25 + pgvector) of similar judgments, percentage-based relevance ranking, fact/evidence comparison, evidence gaps compared with similar cases |
+| RAG for Laws & Precedents | `law_precedent_retriever.py` | Retrieves relevant Acts/sections and precedent passages from the shared legal corpus for the identified legal issues |
+| Grounded Explanation | `agents/explanation_agent.py` | Explains, using only retrieved sources, why each similar case and law/precedent is relevant; every statement carries a citation |
+| Report | `report_builder.py` | Assembles the final Civil Case Intelligence Report |
+
+LangGraph flow (`agents/graph.py`): `process_document → extract_info → analyse_insights → retrieve_similar_cases → retrieve_laws_precedents → explain → build_report` (each a node; state is a typed dict).
 
 **Endpoints (`/api/v1/c2`)**
 
 | Method | Path | Description |
 |---|---|---|
-| POST | `/analyses` | Submit case (structured input or `document_id`) → `analysis_id` |
-| GET | `/analyses/{id}` | Status + results |
-| GET | `/analyses/{id}/cases` | Ranked relevant cases with percentage + factor breakdown |
-| GET | `/analyses/{id}/cases/{case_id}/explanation` | Similarities, differences, reasoning |
-| GET | `/analyses/{id}/evidence-gaps` | Missing evidence vs. precedents |
-| POST | `/analyses/{id}/what-if` | Change a legal fact → re-run and compare (**clearly labelled hypothetical**) |
-| GET | `/analyses` | User's history |
+| POST | `/reports` | Submit a civil case document (multipart file, or JSON `{ "text": "..." }`) → `report_id` (`202`, runs asynchronously) |
+| GET | `/reports/{id}` | Status + the full Civil Case Intelligence Report once done |
+| GET | `/reports/{id}/similar-cases` | Ranked similar cases with percentage relevance score + factor breakdown |
+| GET | `/reports/{id}/similar-cases/{case_id}/explanation` | Similarities, differences, reasoning |
+| GET | `/reports/{id}/laws-precedents` | Relevant laws and precedents with citations |
+| GET | `/reports/{id}/gaps` | Evidence/information gaps |
+| GET | `/reports` | User's history |
+| DELETE | `/reports/{id}` | Delete the report and the uploaded document |
 
-**Relevance scoring (percentage-based relevance score — NOT a probability)**
+**Main output — Civil Case Intelligence Report** (Pydantic model `CivilCaseIntelligenceReport` in this component's `schemas.py`; it is not shared with other components)
+
+```json
+{
+  "report_id": "…",
+  "status": "done",
+  "case_information": {
+    "case_type": "Employment",
+    "court": "Court of Appeal",
+    "case_number": "…",
+    "summary": "…",
+    "remedy_requested": "Compensation"
+  },
+  "parties_and_positions": [
+    { "party": "…", "role": "plaintiff | defendant | appellant | respondent | other", "position": "…" }
+  ],
+  "legal_issues": [
+    { "issue": "Wrongful termination", "description": "…" }
+  ],
+  "evidence_and_information_gaps": [
+    { "kind": "evidence | information", "description": "…", "basis": "…" }
+  ],
+  "similar_cases": [
+    {
+      "source_id": "…", "title": "…", "citation": "…",
+      "relevance_score": 91,
+      "factor_labels": { "issue": "High", "fact": "High", "claim": "High", "evidence": "Medium", "remedy": "High" },
+      "explanation": { "similarities": ["…"], "differences": ["…"], "summary": "…" }
+    }
+  ],
+  "relevant_laws_and_precedents": [
+    { "citation": { "…": "SourceCitation" }, "excerpt": "…", "why_relevant": "…" }
+  ],
+  "explanations": { "overall_summary": "…" },
+  "citations": [ { "…": "SourceCitation" } ],
+  "scoring_version": "…",
+  "model_version": "…",
+  "disclaimer": "This is informational and not legal advice."
+}
+```
+
+**Report rules**
+- Every entry in `similar_cases` and `relevant_laws_and_precedents` carries a citation; the top-level `citations` list is the de-duplicated union of them.
+- Gaps are phrased as "not found in the document" or "present in similar cases but absent here", never as legal conclusions.
+- If retrieval finds no strong similar cases or laws, return the sections empty and say so, rather than padding them with weak matches.
+
+**Similar-case relevance scoring (percentage-based relevance score — NOT a probability)**
 
 ```python
 score = 100 * (
@@ -443,84 +512,59 @@ score = 100 * (
 - **Weights are initial guesses**; the research must tune and validate them (e.g., against lawyer-labelled relevance judgments; grid search / learning-to-rank). Keep weights in config and store the `scoring_version` on every result for reproducibility.
 - Always describe the output as a *percentage-based relevance score*.
 
-**Explanation (LangChain agent / chain)**
-- Input: current case facts + retrieved precedent chunks + factor scores.
-- Output (structured, Pydantic): `similarities[]`, `differences[]`, `factor_reasons{}`, `summary`.
+**Grounded explanation (LangChain agent / chain)**
+- Input: extracted case information + insights + retrieved similar cases and law/precedent chunks + factor scores.
+- Output (structured, Pydantic): per similar case `similarities[]`, `differences[]`, `factor_reasons{}`, `summary`; per law/precedent `why_relevant`; plus an overall summary.
 - The LLM must only use provided evidence; every statement links to a chunk/citation. Use `with_structured_output(...)`.
-- LangGraph flow: `extract_facts → retrieve → rank → compare → explain → evidence_gap` (each a node; state is a typed dict).
 
-**What-if:** clone the case features, apply the modified fact, re-run retrieval + ranking, return a diff (cases entering/leaving the list, score changes). Response is flagged `"mode": "hypothetical"` and never stored as the actual case's result.
+**Notes**
+- Long-running work → FastAPI `BackgroundTasks` first; move to a task queue only if needed. Status field: `queued → processing → done | failed`.
+- Uploaded files go to object storage (S3/R2) or local disk in dev; save only the path in the DB.
+- C2 does its own document processing and extraction inside its folder; it does not import from C1.
 
-**Tables (schema `c2`)**: `analyses`, `analysis_cases` (analysis_id, case_id, score, factor_scores JSONB, scoring_version), `explanations`, `evidence_gaps`, `whatif_runs`.
+**Tables (schema `c2`)**: `documents` (id, user_id, filename, mime, storage_path, status, created_at), `reports` (id, document_id, user_id, status, report_json JSONB, scoring_version, model_version, created_at), `report_cases` (report_id, case_id, score, factor_scores JSONB, scoring_version), `explanations` (report_id, case_id, explanation_json JSONB), `evidence_gaps` (report_id, kind, description, basis).
 
-**Evaluation (`evaluation/`)**: Precision@k, Recall@k, F1, MRR/nDCG, confusion matrix on a labelled relevance set.
+**Evaluation (`evaluation/`)**: field-level extraction accuracy/F1 against labelled documents; Precision@k, Recall@k, F1, MRR/nDCG and confusion matrix on a labelled relevance set; a groundedness check that every citation in a report resolves to a retrieved chunk.
 
-**`public.py` exposes:** `async def analyse_case(info: StructuredLegalInfo) -> AnalysisResult`.
+**`public.py` exposes:** `async def generate_report(text: str) -> CivilCaseIntelligenceReport`.
 
 ---
 
-### 6.3 C3 — Citizen Legal Q&A Assistant
+### 6.3 C3 — AI-Powered Legal Misinformation Detection System
+
+**Input is text OR an image (OCR), in English, Sinhala, or Tamil.** This is the component's main technical challenge: everything downstream (claim extraction, retrieval, verdict) has to work regardless of which of the two input modes and three languages arrived.
 
 **Pipeline**
 
 ```
-User question → (rewrite using chat history) → hybrid retrieval (acts/judgments)
-→ context construction (dedupe, order, token budget) → LLM → grounded answer
-→ citations/sources → saved to conversation
+Input (text OR image) → input routing → [image path: OCR extraction (en/si/ta)]
+→ language detection → [if si/ta: translate/normalize for retrieval] → claim extraction
+(atomic claims) → legal concept identification → relevant source retrieval
+→ semantic/evidence comparison (NLI or LLM judge) → verdict per claim:
+True | False | Misleading → explanation + sources (in the input language)
 ```
 
 **Endpoints (`/api/v1/c3`)**
 
 | Method | Path | Description |
 |---|---|---|
-| POST | `/conversations` | Create conversation |
-| GET | `/conversations` | List user's conversations |
-| GET | `/conversations/{id}` | Messages |
-| POST | `/conversations/{id}/messages` | Ask question → answer + sources (JSON) |
-| POST | `/conversations/{id}/messages/stream` | Same, streamed via **SSE** |
-| DELETE | `/conversations/{id}` | Delete |
-| POST | `/conversations/{id}/context` | Attach a C1 `document_id` or C2 `analysis_id` as context |
-
-**Rules for the answer chain**
-- Answer **only** from retrieved context; if the context is insufficient, say so instead of guessing.
-- Every answer includes `sources: SourceCitation[]`.
-- Add a "not legal advice" disclaimer field in the response.
-- Optional agent tools: `search_legal_corpus`, `get_document_info` (via C1 `public.py`), `get_case_analysis` (via C2 `public.py`).
-
-**Tables (schema `c3`)**: `conversations`, `messages` (role, content, sources JSONB, created_at), `feedback` (message_id, rating, comment).
-
-**`public.py` exposes:** `async def answer_question(question, history=None) -> Answer`.
-
----
-
-### 6.4 C4 — Legal Misinformation Detection
-
-**Pipeline**
-
-```
-Legal claim → claim extraction (atomic claims) → legal concept identification
-→ relevant source retrieval → semantic/evidence comparison (NLI or LLM judge)
-→ verdict per claim: Supported | Contradicted | Insufficient Evidence
-→ explanation + sources
-```
-
-**Endpoints (`/api/v1/c4`)**
-
-| Method | Path | Description |
-|---|---|---|
-| POST | `/verifications` | Submit text/claim → `verification_id` |
-| GET | `/verifications/{id}` | Verdict(s) per atomic claim, explanation, evidence |
-| POST | `/verify-answer` | Verify an LLM-generated answer (e.g., from C3) against sources |
-| GET | `/verifications` | History |
+| POST | `/verifications` | Submit a text claim (JSON: `{ "text": "...", "language": "auto\|en\|si\|ta" }`) → `verification_id` |
+| POST | `/verifications/image` | Submit an image (multipart) → runs OCR, then verification |
+| GET | `/verifications/{id}` | Verdict(s) per atomic claim, explanation, evidence, `detected_language`, `input_mode` |
+| POST | `/verify-answer` | Verify arbitrary generated text (e.g. from another component) against sources |
+| GET | `/verifications` | User's history |
 
 **Response shape**
 
 ```json
 {
+  "input_mode": "text | image",
+  "detected_language": "en | si | ta",
   "claims": [
     {
       "claim": "…",
-      "verdict": "Supported | Contradicted | Insufficient Evidence",
+      "claim_translated": "… (English, if original was si/ta)",
+      "verdict": "True | False | Misleading",
       "confidence": 0.82,
       "explanation": "…",
       "evidence": [ { "citation": {…}, "excerpt": "…", "stance": "supports|contradicts" } ]
@@ -530,25 +574,87 @@ Legal claim → claim extraction (atomic claims) → legal concept identificatio
 ```
 
 **Rules**
-- Default to **Insufficient Evidence** when retrieval confidence is low. Never mark Supported without at least one cited passage.
+- Only three verdicts exist: **True**, **False**, **Misleading** (no "insufficient evidence" bucket). When retrieved evidence is weak or ambiguous, still return the best-supported verdict but keep `confidence` low and say so explicitly in `explanation` — never silently present a low-confidence guess as certain. A claim that is technically accurate but omits crucial context is **Misleading**, not True.
 - Combine an NLI/cross-encoder model (entailment / contradiction / neutral) with an LLM judge for the explanation.
-- Evaluate with a labelled claim set (accuracy, per-class precision/recall, confusion matrix).
+- OCR: PyMuPDF/pdf text extraction won't help here since input is an image — use Tesseract with `eng+sin+tam` trained data (or a cloud OCR API that supports Sinhala/Tamil scripts) in `pipeline/ocr_extractor.py`.
+- Language detection needs Sinhala/Tamil support specifically — common libraries like `langdetect` are unreliable for these scripts; prefer something like fastText's `lid.176` model, which covers `si` and `ta`.
+- The shared legal corpus (`shared.legal_chunks`) is expected to be mostly English (Acts, judgments). If the claim is in Sinhala/Tamil, translate/normalize the extracted claim into English for retrieval (`pipeline/translator.py`), but return the explanation in the original input language when possible.
+- Evaluate with a labelled claim set: accuracy and per-class (True/False/Misleading) precision/recall/confusion matrix, plus OCR accuracy and language-detection accuracy as separate metrics.
 
-**Tables (schema `c4`)**: `verifications`, `claims`, `claim_evidence`.
+**Tables (schema `c3`)**: `verifications` (id, input_mode, detected_language, status), `claims` (verification_id, claim_text, claim_translated, verdict, confidence), `claim_evidence`, `media_inputs` (verification_id, storage_path, ocr_raw_text, ocr_confidence).
 
-**`public.py` exposes:** `async def verify_claims(text: str) -> VerificationResult` (C3 may call this to check its own answers).
+**`public.py` exposes:** `async def verify_claim(text: str, language: str | None = None) -> VerificationResult`, `async def verify_image(image_bytes: bytes) -> VerificationResult`.
+
+---
+
+### 6.4 C4 — Multi-Agent Legal Argumentation Engine
+
+**Purpose.** Rather than a single verdict or a ranked list, this component simulates an **adversarial legal debate**: a Plaintiff agent and a Defense agent argue opposing sides of the submitted case over several rounds, each citing retrieved sources, while an Auditor agent checks every claim against the actual source text and scores how well-grounded it is. The output is a structured, inspectable **argument graph**, not prose.
+
+**Pipeline**
+
+```
+Case facts → case_intake (parse facts) → source_retriever (retrieval for both sides)
+→ debate_orchestrator: LangGraph turn-taking loop
+      Plaintiff turn → Defense turn → Auditor check → (repeat for N rounds)
+→ argument_graph_builder (turns → JSON nodes/edges)
+→ auditor_pipeline (final claim-vs-source check, strength scoring per node)
+→ Argument graph + audit report
+```
+
+**Endpoints (`/api/v1/c_argumentation`)** — note this component's prefix is `c_argumentation`, not `c4`, because its folder isn't named `c4_*`.
+
+| Method | Path | Description |
+|---|---|---|
+| POST | `/debates` | Submit case facts (structured input or free text) → `debate_id`, runs the debate |
+| GET | `/debates/{id}` | Status + full argument graph (nodes + edges) |
+| GET | `/debates/{id}/turns` | Ordered transcript: each Plaintiff/Defense turn in sequence |
+| GET | `/debates/{id}/audit` | Auditor's per-node claim-vs-source findings + strength scores |
+| POST | `/debates/{id}/continue` | Run additional round(s) on an existing debate |
+| GET | `/debates` | User's history |
+
+**Argument graph shape**
+
+```json
+{
+  "nodes": [
+    { "id": "n1", "agent": "plaintiff", "round": 1, "claim": "…", "cites": ["src_12"], "strength_score": 0.74 },
+    { "id": "n2", "agent": "defense",   "round": 1, "claim": "…", "cites": ["src_7"],  "strength_score": 0.61 }
+  ],
+  "edges": [
+    { "from": "n2", "to": "n1", "relation": "attacks" },
+    { "from": "n1", "to": "src_12", "relation": "cites" }
+  ]
+}
+```
+
+- `strength_score` comes from the Auditor: how well the node's claim is actually supported by the cited source text (not just whether a citation is present).
+- `relation` values: `attacks`, `supports`, `cites`, `rebuts`.
+
+**Agents (`agents/`)**
+- **`plaintiff_agent.py`** — argues for the claimant, retrieving and citing precedents/sources that support their position.
+- **`defense_agent.py`** — argues for the respondent; retrieves counter-precedents and attacks weak points in the Plaintiff's claims.
+- **`auditor_agent.py`** — after each round (or at the end), checks every claim against the *actual retrieved source text*, not the agent's paraphrase, flags unsupported assertions, and assigns `strength_score`.
+
+**`debate_orchestrator.py` (LangGraph)**: a graph with nodes `plaintiff_turn → defense_turn → auditor_check → (loop for N rounds or until a stopping condition) → finalize_graph`. State is a typed dict: `case_facts`, `turn_history`, `nodes`, `edges`, `round_count`.
+
+**Retrieval note:** the component description names **ChromaDB** for this component's RAG. To keep contracts consistent across the platform, either (a) reuse `app.shared.retrieval.HybridRetriever` like C2/C3 do (simplest, one less moving part), or (b) run a separate ChromaDB collection here but have `source_retriever.py` wrap it so it still returns `list[RetrievedChunk]` — the same contract type the rest of the platform uses. Decide this in Week 0 (see §17) since it affects whether this component needs its own vector store alongside Neon/pgvector.
+
+**Tables (schema `c_arg`)**: `cases` (id, facts_json, user_id, created_at), `argument_nodes` (id, case_id, agent, round, claim_text, cites JSONB, strength_score, created_at), `argument_edges` (id, case_id, from_node, to_node, relation).
+
+**`public.py` exposes:** `async def run_debate(case_facts: dict) -> ArgumentGraph`.
 
 ---
 
 ## 7. Database & Migrations (Neon)
 
-- **One Neon database**, five schemas: `shared`, `c1`, `c2`, `c3`, `c4`. Each component's SQLAlchemy models set `__table_args__ = {"schema": "cN"}` and use their **own** `DeclarativeBase`/`MetaData`.
-- **Alembic multi-branch:** in `alembic.ini` list every `version_locations`; each migration file declares `branch_labels = ("c1",)` (etc.). Members run `alembic upgrade c1@head` for their own branch only.
+- **One Neon database**, five schemas: `shared`, `c1`, `c2`, `c3`, `c_arg`. Each component's SQLAlchemy models set `__table_args__ = {"schema": "..."}` (`"c1"`, `"c2"`, `"c3"`, or `"c_arg"`) and use their **own** `DeclarativeBase`/`MetaData`.
+- **Alembic multi-branch:** in `alembic.ini` list every `version_locations`; each migration file declares `branch_labels = ("c1",)` (etc., using `"c_arg"` for the argumentation engine). Members run `alembic upgrade c1@head` for their own branch only.
   ```
   version_locations = app/components/c1_document_understanding/migrations/versions
-                      app/components/c2_case_analysis/migrations/versions
-                      app/components/c3_legal_qa/migrations/versions
-                      app/components/c4_misinformation/migrations/versions
+                      app/components/c2_case_intelligence/migrations/versions
+                      app/components/c3_misinformation/migrations/versions
+                      app/components/c_argumentation/migrations/versions
                       app/shared/migrations/versions
   ```
 - **Dev isolation on Neon:** use **Neon branches** — every member gets their own database branch (copy-on-write) so experiments never break each other's data. `main` branch = integration/staging.
@@ -558,14 +664,16 @@ Legal claim → claim extraction (atomic claims) → legal concept identificatio
 
 ## 8. Component Registration & App Bootstrap
 
+Because `c_argumentation`'s folder name doesn't follow the `cN_*` pattern, prefixes are declared **explicitly** as a dict rather than derived from the folder name:
+
 ```python
-# app/registry.py  — one line per component
-COMPONENTS = [
-    "app.components.c1_document_understanding",
-    "app.components.c2_case_analysis",
-    "app.components.c3_legal_qa",
-    "app.components.c4_misinformation",
-]
+# app/registry.py  — module path → URL prefix segment
+COMPONENTS = {
+    "app.components.c1_document_understanding": "c1",
+    "app.components.c2_case_intelligence": "c2",
+    "app.components.c3_misinformation": "c3",
+    "app.components.c_argumentation": "c_argumentation",
+}
 ```
 
 ```python
@@ -576,12 +684,12 @@ from app.registry import COMPONENTS
 
 app = FastAPI(title="Smart Civil Case Analysis Platform", version="0.1.0")
 
-for path in COMPONENTS:
+for module_path, prefix in COMPONENTS.items():
     try:
-        module = import_module(f"{path}.router")
-        app.include_router(module.router, prefix=f"/api/v1/{path.split('.')[-1].split('_')[0]}")
+        module = import_module(f"{module_path}.router")
+        app.include_router(module.router, prefix=f"/api/v1/{prefix}")
     except ImportError as e:      # a broken/unfinished component must not crash the others
-        print(f"[WARN] component {path} not loaded: {e}")
+        print(f"[WARN] component {module_path} not loaded: {e}")
 ```
 
 Each component's `router.py` exports `router = APIRouter(tags=["C1 – Document Understanding"])`.
@@ -593,10 +701,10 @@ from fastapi import FastAPI
 from .router import router
 app = FastAPI(title="C2 dev")
 app.include_router(router, prefix="/api/v1/c2")
-# run: uvicorn app.components.c2_case_analysis.dev_app:app --reload --port 8002
+# run: uvicorn app.components.c2_case_intelligence.dev_app:app --reload --port 8002
 ```
 
-Suggested dev ports: C1 → 8001, C2 → 8002, C3 → 8003, C4 → 8004, full app → 8000.
+Suggested dev ports: C1 → 8001, C2 → 8002, C3 (misinformation) → 8003, C4 / `c_argumentation` → 8004, full app → 8000.
 
 ---
 
@@ -606,7 +714,7 @@ Suggested dev ports: C1 → 8001, C2 → 8002, C3 → 8003, C4 → 8004, full ap
 - JSON in / JSON out; Pydantic schemas for every request and response.
 - Async endpoints (`async def`) and async DB sessions.
 - Long tasks: return `202 Accepted` + resource id; client polls `GET /.../{id}` (status: `queued | processing | done | failed`).
-- Streaming (C3): Server-Sent Events.
+- Streaming: use Server-Sent Events for any long, incremental output (e.g. `c_argumentation` streaming debate turns as they're generated).
 - Uniform error body:
   ```json
   { "error": { "code": "DOCUMENT_NOT_FOUND", "message": "…", "details": {} } }
@@ -622,7 +730,7 @@ Suggested dev ports: C1 → 8001, C2 → 8002, C3 → 8003, C4 → 8004, full ap
 ## 10. LangChain / LangGraph Guidelines
 
 - Get models only via `app.core.llm.get_llm()` and `app.core.embeddings.get_embedder()`.
-- Use **LCEL** chains for simple flows (C3 RAG) and **LangGraph** for multi-step agents (C2 pipeline, C4 verifier). Keep graph state as a typed `TypedDict`/Pydantic model.
+- Use **LCEL** chains for simple flows (single-shot extraction/verification) and **LangGraph** for multi-step agents (C2's document-to-report pipeline, C3's OCR→verify pipeline, and especially `c_argumentation`'s Plaintiff/Defense/Auditor turn-taking loop). Keep graph state as a typed `TypedDict`/Pydantic model.
 - Use `llm.with_structured_output(PydanticModel)` for anything the API returns as JSON.
 - Prompts live in each component's `prompts/` folder as versioned files (e.g., `explain_v1.md` or Python templates) — not inline strings scattered in code.
 - Grounding rule in every legal prompt: *"Use only the provided sources. If they are insufficient, say so. Cite every claim."*
@@ -633,17 +741,33 @@ Suggested dev ports: C1 → 8001, C2 → 8002, C3 → 8003, C4 → 8004, full ap
 
 ---
 
-## 11. Data Flow Between Components (contract-based)
+## 11. Data Flow Between Components — Independent, Not a Pipeline
+
+Each component has its **own input and its own output**, and a user can call any one directly without touching the others — none of them requires another to already have run. The only thing every component shares is read-only access to the legal corpus:
 
 ```
-C1 ──StructuredLegalInfo──► C2   (case analysis input)
-C1 ──StructuredLegalInfo──► C3   (context for questions about an uploaded document)
-C2 ──AnalysisResult───────► C3   (answer questions about the analysis)   [via C2 public.py]
-C3 ──answer text──────────► C4   (verify generated answers)              [via C4 public.py]
-C1/C2/C3/C4 ──────────────► shared.retrieval ──► shared.legal_chunks (read-only)
+                         ┌────────────────────────────────────────┐
+                         │  shared.retrieval → shared.legal_chunks │
+                         │              (read-only)                │
+                         └───▲──────────▲──────────▲───────────────┘
+                             │          │          │
+   C1                          C2                              C3                       C4
+   document                    civil case document             claim (text/image)       case facts
+     → StructuredLegalInfo       → Civil Case Intelligence       → True/False/Misleading  → argument graph
+                                   Report                          verdicts
 ```
 
-Integration happens **through `public.py` functions + `shared/contracts`**, so any component can be swapped with a mock during development.
+C2 does its own document processing and legal information extraction inside its own folder (`pipeline/document_processor.py`, `pipeline/info_extractor.py`), so it needs nothing from C1.
+
+The **only** optional cross-component link is:
+
+```
+C1 ──StructuredLegalInfo (optional)──► C4   (a debate can be seeded from an already-uploaded document)
+```
+
+It is opt-in: the caller passes a `document_id` if they have one; the endpoint also accepts plain structured/free-text input so it works with no other component involved. There is no required chain C1→C2→C3→C4 — build and test each component against its own input/output contract independently.
+
+Where a link exists, integration happens **through `public.py` functions + `shared/contracts`**, so any component can be swapped with a mock during development.
 
 ---
 
@@ -653,9 +777,9 @@ Integration happens **through `public.py` functions + `shared/contracts`**, so a
 
 ```
 /app/components/c1_document_understanding/   @member1
-/app/components/c2_case_analysis/            @member2
-/app/components/c3_legal_qa/                 @member3
-/app/components/c4_misinformation/           @member4
+/app/components/c2_case_intelligence/          @member2
+/app/components/c3_misinformation/           @member3
+/app/components/c_argumentation/             @member4
 /app/core/                                   @lead @member1 @member2 @member3 @member4
 /app/shared/                                 @lead @member1 @member2 @member3 @member4
 /scripts/                                    @lead
@@ -665,13 +789,13 @@ Integration happens **through `public.py` functions + `shared/contracts`**, so a
 - `main` (protected) ← `develop` ← feature branches: `c2/relevance-ranker`, `c3/sse-streaming`, etc.
 - Branch prefix = component id. A PR touching more than one component folder (other than `core`/`shared`) is rejected.
 - Conventional commits: `feat(c2): add evidence gap analysis`.
-- CI: lint (`ruff`), type-check (`mypy`, optional), tests per component (`pytest app/components/c2_case_analysis`).
+- CI: lint (`ruff`), type-check (`mypy`, optional), tests per component (`pytest app/components/c2_case_intelligence`).
 
 **Suggested build order**
 1. **Week 0 (whole team):** finalize `core/`, `shared/contracts`, `shared/retrieval` skeleton, Neon setup + branches, ingest a small sample corpus.
 2. **Phase 1:** each member builds their component against mocks / sample corpus using `dev_app.py`.
 3. **Phase 2:** connect via `public.py`, integration tests, frontend wiring.
-4. **Phase 3:** evaluation, tuning (C2 weights, C4 thresholds), hardening.
+4. **Phase 3:** evaluation, tuning (C2 weights, C3 verdict thresholds, C4 debate strength scoring), hardening.
 
 ---
 
@@ -722,8 +846,8 @@ Read BACKEND_ARCHITECTURE.md before writing code.
 
 - *"Read BACKEND_ARCHITECTURE.md. I'm Member 2 (C2). Implement `pipeline/ranker.py` with the relevance score formula from §6.2, weights loaded from `config.py`, plus unit tests."*
 - *"Read BACKEND_ARCHITECTURE.md. I'm Member 1 (C1). Implement `pipeline/pdf_extractor.py` with PyMuPDF and the `POST /documents` endpoint from §6.1."*
-- *"Read BACKEND_ARCHITECTURE.md. I'm Member 3 (C3). Build the RAG chain in `rag/answer_chain.py` using HybridRetriever and return `sources`."*
-- *"Read BACKEND_ARCHITECTURE.md. I'm Member 4 (C4). Implement `pipeline/verifier.py` with the three verdicts and the default-to-Insufficient rule."*
+- *"Read BACKEND_ARCHITECTURE.md. I'm Member 3 (C3, misinformation detection). Implement `pipeline/ocr_extractor.py` for English/Sinhala/Tamil and `pipeline/verifier.py` with the True/False/Misleading verdicts from §6.3."*
+- *"Read BACKEND_ARCHITECTURE.md. I'm Member 4 (`c_argumentation`). Implement `debate_orchestrator.py` as a LangGraph loop over `plaintiff_agent.py` and `defense_agent.py`, with `auditor_agent.py` scoring each turn, per §6.4."*
 
 ---
 
@@ -732,7 +856,7 @@ Read BACKEND_ARCHITECTURE.md before writing code.
 - **Unit tests** per component (`tests/`), mocking LLM and retrieval (`FakeListChatModel`, fixtures).
 - **Contract tests**: validate `public.py` return types against `shared/contracts`.
 - **Integration tests** in `/tests/integration` (added in Phase 2).
-- **Evaluation notebooks/scripts** live in each component's `evaluation/` (C2 retrieval metrics, C4 verdict accuracy, C1 classification/NER F1).
+- **Evaluation notebooks/scripts** live in each component's `evaluation/` (C1 classification/NER F1, C2 retrieval metrics, C3 verdict accuracy + OCR/language-detection accuracy, C4 argument-strength scoring vs. human review).
 - Pre-commit: `ruff`, `ruff format`, `pytest -q`.
 
 ---
@@ -744,7 +868,6 @@ Read BACKEND_ARCHITECTURE.md before writing code.
 - Rate-limit LLM endpoints (e.g., `slowapi`).
 - Prompt-injection defence: treat uploaded text and retrieved chunks as **data, not instructions**; keep system prompts separate.
 - All legal outputs carry the disclaimer: *"This is informational and not legal advice."*
-- Explicitly separate **actual-case analysis** from **hypothetical (what-if)** outputs.
 
 ---
 
@@ -752,8 +875,10 @@ Read BACKEND_ARCHITECTURE.md before writing code.
 
 1. Embedding model for retrieval (raw Legal-BERT is not trained for sentence similarity; consider a sentence-embedding model or a fine-tuned Legal-BERT) and its vector dimension.
 2. LLM provider/model and budget.
-3. Language scope: English only, or Sinhala/Tamil support (affects OCR, tokenization, embeddings).
-4. Corpus sources and licensing (Acts, Court of Appeal / Supreme Court judgments) and ingestion schedule.
-5. Auth approach shared with the Next.js frontend (own JWT vs. NextAuth-issued tokens).
-6. File storage for uploads (local / S3 / R2).
-7. Whether a task queue is needed (start without one).
+3. OCR engine and Sinhala/Tamil language-detection library for C3 (Tesseract `eng+sin+tam` vs. a cloud OCR API; fastText `lid.176` vs. alternatives) — see §6.3.
+4. Whether C3 translates Sinhala/Tamil claims into English before retrieval, or the corpus itself needs multilingual embeddings.
+5. Whether `c_argumentation` uses `app.shared.retrieval.HybridRetriever` (pgvector, consistent with the rest of the platform) or a separate ChromaDB collection wrapped to the same `RetrievedChunk` contract — see §6.4.
+6. Corpus sources and licensing (Acts, Court of Appeal / Supreme Court judgments) and ingestion schedule.
+7. Auth approach shared with the Next.js frontend (own JWT vs. NextAuth-issued tokens).
+8. File storage for uploads (local / S3 / R2).
+9. Whether a task queue is needed (start without one).
