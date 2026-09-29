@@ -1,6 +1,6 @@
 from fastapi import APIRouter
 
-router = APIRouter(tags=["C1 – Document Understanding"])
+router = APIRouter(tags=["C1 – Case Analysis"])
 
 
 @router.get("/ping")

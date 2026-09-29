@@ -57,8 +57,8 @@ One FastAPI application, but each component is a **self-contained module** that 
                       └──┬─────────┬─────────┬───────────────┬┘
           /api/v1/c1     │  /c2    │  /c3    │  /c_argumentation
           ┌──────────────▼┐ ┌──────▼──────┐ ┌▼─────────────┐ ┌▼──────────────┐
-          │ C1 Document   │ │ C2 Case     │ │ C3 Misinfo   │ │ C4 Argumen-   │
-          │ Understanding │ │ Analysis    │ │ Detection    │ │ tation Engine │
+          │ C1 Case       │ │ C2 Case     │ │ C3 Misinfo   │ │ C4 Argumen-   │
+          │ Analysis      │ │ Analysis    │ │ Detection    │ │ tation Engine │
           └──────┬────────┘ └──────┬──────┘ └──────┬───────┘ └─────┬─────────┘
                  │                 │               │               │
         ┌────────▼─────────────────▼───────────────▼───────────────▼───────┐
@@ -118,7 +118,7 @@ backend/
 │   │       └── citations.py
 │   │
 │   └── components/
-│       ├── c1_document_understanding/     # 👤 Member 1 ONLY
+│       ├── c1_CaseAnalysis/     # 👤 Member 1 ONLY
 │       │   ├── __init__.py
 │       │   ├── public.py                  # ONLY thing other components may import
 │       │   ├── router.py                  # FastAPI routes  → /api/v1/c1
@@ -238,7 +238,7 @@ backend/
 
 ## 4. Isolation Rules (critical)
 
-1. **Own your folder only.** Each member edits only their own folder (`app/components/c1_document_understanding/`, `c2_case_intelligence/`, `c3_misinformation/`, or `c_argumentation/`). Never edit another component's folder.
+1. **Own your folder only.** Each member edits only their own folder (`app/components/c1_CaseAnalysis/`, `c2_case_intelligence/`, `c3_misinformation/`, or `c_argumentation/`). Never edit another component's folder.
 2. **No cross-imports of internals.** A component must NOT do `from app.components.c2_case_intelligence.service import ...`. Allowed imports:
    - `app.core.*`
    - `app.shared.*`
@@ -651,7 +651,7 @@ Case facts → case_intake (parse facts) → source_retriever (retrieval for bot
 - **One Neon database**, five schemas: `shared`, `c1`, `c2`, `c3`, `c_arg`. Each component's SQLAlchemy models set `__table_args__ = {"schema": "..."}` (`"c1"`, `"c2"`, `"c3"`, or `"c_arg"`) and use their **own** `DeclarativeBase`/`MetaData`.
 - **Alembic multi-branch:** in `alembic.ini` list every `version_locations`; each migration file declares `branch_labels = ("c1",)` (etc., using `"c_arg"` for the argumentation engine). Members run `alembic upgrade c1@head` for their own branch only.
   ```
-  version_locations = app/components/c1_document_understanding/migrations/versions
+  version_locations = app/components/c1_CaseAnalysis/migrations/versions
                       app/components/c2_case_intelligence/migrations/versions
                       app/components/c3_misinformation/migrations/versions
                       app/components/c_argumentation/migrations/versions
@@ -669,7 +669,7 @@ Because `c_argumentation`'s folder name doesn't follow the `cN_*` pattern, prefi
 ```python
 # app/registry.py  — module path → URL prefix segment
 COMPONENTS = {
-    "app.components.c1_document_understanding": "c1",
+    "app.components.c1_CaseAnalysis": "c1",
     "app.components.c2_case_intelligence": "c2",
     "app.components.c3_misinformation": "c3",
     "app.components.c_argumentation": "c_argumentation",
@@ -692,7 +692,7 @@ for module_path, prefix in COMPONENTS.items():
         print(f"[WARN] component {module_path} not loaded: {e}")
 ```
 
-Each component's `router.py` exports `router = APIRouter(tags=["C1 – Document Understanding"])`.
+Each component's `router.py` exports `router = APIRouter(tags=["C1 – Case Analysis"])`.
 
 **Standalone dev runner** (`dev_app.py`) so a member can run only their component:
 
@@ -776,7 +776,7 @@ Where a link exists, integration happens **through `public.py` functions + `shar
 **Ownership (`CODEOWNERS`)**
 
 ```
-/app/components/c1_document_understanding/   @member1
+/app/components/c1_CaseAnalysis/   @member1
 /app/components/c2_case_intelligence/          @member2
 /app/components/c3_misinformation/           @member3
 /app/components/c_argumentation/             @member4

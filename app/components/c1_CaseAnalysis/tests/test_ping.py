@@ -1,6 +1,6 @@
 from fastapi.testclient import TestClient
 
-from app.components.c1_document_understanding.dev_app import app
+from app.components.c1_CaseAnalysis.dev_app import app
 
 
 def test_ping():
