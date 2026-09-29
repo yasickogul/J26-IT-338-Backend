@@ -5,7 +5,7 @@ set -euo pipefail
 
 ROOT="${1:-backend}"
 COMPONENTS=(
-  "c1_document_understanding:c1:8001:C1 – Document Understanding"
+  "c1_CaseAnalysis:c1:8001:C1 – Case Analysis"
   "c2_case_intelligence:c2:8002:C2 – Legal Document Intelligence"
   "c3_misinformation:c3:8003:C3 – Misinformation Detection"
   "c_argumentation:c_argumentation:8004:C4 – Multi-Agent Argumentation Engine"
@@ -81,7 +81,7 @@ testpaths = app tests
 EOF
 
 cat > CODEOWNERS <<'EOF'
-/app/components/c1_document_understanding/   @member1
+/app/components/c1_CaseAnalysis/   @member1
 /app/components/c2_case_intelligence/          @member2
 /app/components/c3_misinformation/           @member3
 /app/components/c_argumentation/             @member4
@@ -112,7 +112,7 @@ cat > app/registry.py <<'EOF'
 # module path -> URL prefix segment. c_argumentation doesn't follow the "cN_*"
 # pattern, so prefixes are explicit rather than derived from the folder name.
 COMPONENTS = {
-    "app.components.c1_document_understanding": "c1",
+    "app.components.c1_CaseAnalysis": "c1",
     "app.components.c2_case_intelligence": "c2",
     "app.components.c3_misinformation": "c3",
     "app.components.c_argumentation": "c_argumentation",
@@ -414,7 +414,7 @@ EOF
 done
 
 # component-specific subfolders
-mkdir -p app/components/c1_document_understanding/{pipeline,ml}
+mkdir -p app/components/c1_CaseAnalysis/{pipeline,ml}
 mkdir -p app/components/c2_case_intelligence/{pipeline,agents,evaluation}
 mkdir -p app/components/c3_misinformation/{pipeline,agents,evaluation}
 mkdir -p app/components/c_argumentation/{pipeline,agents,evaluation}

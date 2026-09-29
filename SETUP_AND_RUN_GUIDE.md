@@ -81,7 +81,7 @@ Edit `alembic.ini`:
 
 ```ini
 script_location = alembic
-version_locations = app/components/c1_document_understanding/migrations/versions app/components/c2_case_intelligence/migrations/versions app/components/c3_misinformation/migrations/versions app/components/c_argumentation/migrations/versions app/shared/migrations/versions
+version_locations = app/components/c1_CaseAnalysis/migrations/versions app/components/c2_case_intelligence/migrations/versions app/components/c3_misinformation/migrations/versions app/components/c_argumentation/migrations/versions app/shared/migrations/versions
 ```
 
 Replace `alembic/env.py`'s metadata and URL parts with:
@@ -95,7 +95,7 @@ config.set_main_option("sqlalchemy.url", settings.database_url_direct)
 
 # Import each component's Base as soon as that component has models.
 # Each component defines:  Base = declarative_base(metadata=MetaData(schema="cN"))
-from app.components.c1_document_understanding.models import Base as C1Base   # noqa
+from app.components.c1_CaseAnalysis.models import Base as C1Base   # noqa
 from app.components.c2_case_intelligence.models import Base as C2Base             # noqa
 from app.components.c3_misinformation.models import Base as C3Base                  # noqa
 from app.components.c_argumentation.models import Base as C4Base              # noqa
@@ -167,7 +167,7 @@ If a component fails to import, the app still starts and prints `[WARN] componen
 
 | Component | Command | Port |
 |---|---|---|
-| C1 | `uvicorn app.components.c1_document_understanding.dev_app:app --reload --port 8001` | 8001 |
+| C1 | `uvicorn app.components.c1_CaseAnalysis.dev_app:app --reload --port 8001` | 8001 |
 | C2 | `uvicorn app.components.c2_case_intelligence.dev_app:app --reload --port 8002` | 8002 |
 | C3 | `uvicorn app.components.c3_misinformation.dev_app:app --reload --port 8003` | 8003 |
 | C4 | `uvicorn app.components.c_argumentation.dev_app:app --reload --port 8004` | 8004 |
