@@ -14,5 +14,6 @@ pymupdf>=1.24
 langchain>=0.3
 langchain-core>=0.3
 langgraph>=0.2
+langchain-huggingface>=0.1
+sentence-transformers>=3.0
 # add your LLM provider package, e.g. langchain-anthropic / langchain-openai
-# add embedding/NLP libs when needed: sentence-transformers, transformers, torch

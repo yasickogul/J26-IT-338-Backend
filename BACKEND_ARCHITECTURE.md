@@ -361,7 +361,7 @@ CREATE TABLE shared.legal_chunks (
   section TEXT,                         -- e.g. "Section 12", "Held:" 
   text TEXT NOT NULL,
   tsv TSVECTOR GENERATED ALWAYS AS (to_tsvector('english', text)) STORED,
-  embedding VECTOR(768),                -- dimension = EMBEDDING_DIM
+  embedding VECTOR(384),                -- sentence-transformers/all-MiniLM-L6-v2
   metadata JSONB DEFAULT '{}'
 );
 
@@ -812,8 +812,8 @@ CORS_ORIGINS=http://localhost:3000
 LLM_PROVIDER=anthropic          # or openai, etc.
 LLM_MODEL=<model-name>
 LLM_API_KEY=
-EMBEDDING_MODEL=<model-name>
-EMBEDDING_DIM=768
+EMBEDDING_MODEL=sentence-transformers/all-MiniLM-L6-v2
+EMBEDDING_DIM=384
 
 FILE_STORAGE=local              # local | s3
 FILE_STORAGE_PATH=./data/uploads
