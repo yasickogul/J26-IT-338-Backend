@@ -141,6 +141,7 @@ def test_missing_required_category_returns_422():
     assert r.status_code == 422
 
 
+@pytest.mark.integration
 @pytest.mark.asyncio
 async def test_corrupt_pdf_without_narrative_fails_safely(tmp_path: Path):
     from app.components.c1_CaseAnalysis.service import stage2_service
@@ -161,6 +162,7 @@ async def test_corrupt_pdf_without_narrative_fails_safely(tmp_path: Path):
             await direct_engine.dispose()
 
 
+@pytest.mark.integration
 @pytest.mark.asyncio
 async def test_process_intake_persists_and_returns_json():
     from app.components.c1_CaseAnalysis.service import stage2_service
@@ -187,6 +189,7 @@ async def test_process_intake_persists_and_returns_json():
         await direct_engine.dispose()
 
 
+@pytest.mark.integration
 @pytest.mark.asyncio
 async def test_intake_endpoint_json_roundtrip():
     from httpx import ASGITransport, AsyncClient

@@ -123,9 +123,11 @@ On startup you should see: `Database connected (neondb)` (or your DB name).
 
 ## Tests & lint
 
+Default offline suite (no Neon, no LLM calls). See **`TESTING.md`** for markers, integration opt-in, and CI check names.
+
 ```bash
 uv run pytest -q
-uv run ruff check .
+uv run ruff check app/components/c1_CaseAnalysis tests conftest.py
 ```
 
 ---
