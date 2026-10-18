@@ -5,7 +5,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 from app.shared.contracts.legal_info import StructuredLegalInfo
 
@@ -18,6 +18,23 @@ DisputeCategoryId = Literal[
 ]
 
 IntakeStatus = Literal["queued", "processing", "done", "failed"]
+
+EvidenceAvailability = Literal[
+    "available",
+    "not_available",
+    "not_sure",
+    "not_applicable",
+    "not_provided",
+]
+
+
+class EvidenceFactorItem(BaseModel):
+    """Structured evidence row from the Lawyer wizard (Stage 2 intake only)."""
+
+    id: str | None = None
+    label: str
+    availability: EvidenceAvailability = "not_provided"
+    description: str | None = None
 
 
 class CaseIntakeRequest(BaseModel):
@@ -33,11 +50,37 @@ class CaseIntakeRequest(BaseModel):
     district: str | None = None
     amount_lkr: str | None = None
     relevant_dates: str | None = None
+    case_stage: str | None = None
+    case_stage_label: str | None = None
+    subcategory: str | None = None
+    subcategory_label: str | None = None
+    other_category_description: str | None = None
     description: str | None = None
     legal_issue: str | None = None
     remedy: str | None = None
     evidence_factors: list[str] = Field(default_factory=list)
+    evidence_items: list[EvidenceFactorItem] = Field(default_factory=list)
     text: str | None = None  # optional pasted case narrative / document text
+
+    @model_validator(mode="after")
+    def _derive_evidence_factors(self) -> CaseIntakeRequest:
+        """Keep legacy `evidence_factors` populated when only structured items are sent."""
+        if self.evidence_factors or not self.evidence_items:
+            return self
+        factors: list[str] = []
+        for item in self.evidence_items:
+            label = (item.label or "").strip()
+            if not label:
+                continue
+            availability = item.availability.replace("_", " ")
+            if item.availability == "available" and item.description:
+                factors.append(f"{label} — available: {item.description.strip()}")
+            elif item.availability == "not_provided":
+                continue
+            else:
+                factors.append(f"{label} — {availability}")
+        self.evidence_factors = factors
+        return self
 
 
 class ExtractTextRequest(BaseModel):
@@ -68,6 +111,11 @@ class CaseInformation(BaseModel):
     district: str | None = None
     amount_lkr: str | None = None
     relevant_dates: str | None = None
+    case_stage: str | None = None
+    case_stage_label: str | None = None
+    subcategory: str | None = None
+    subcategory_label: str | None = None
+    other_category_description: str | None = None
 
 
 class ExtractedLegalInfo(BaseModel):
@@ -90,6 +138,10 @@ class ExtractedLegalInfo(BaseModel):
     model_version: str
     disclaimer: str
     created_at: datetime | None = None
+    # Explicit Stage 3+ capability flags so clients never assume retrieval/scoring.
+    similar_cases_available: bool = False
+    legal_relevance_score_available: bool = False
+    llm_explanation_available: bool = False
 
 
 class IntakeAccepted(BaseModel):
