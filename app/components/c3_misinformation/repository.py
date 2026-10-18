@@ -91,6 +91,22 @@ async def get_owned_claim_state(
         raise ClaimStorageError("Unable to read claim storage.") from exc
 
 
+async def anonymous_session_has_claim(
+    anonymous_session_hash: str, *, session: AsyncSession,
+) -> bool:
+    """Check whether an anonymous session already owns a claim."""
+    _require_owner_hash(anonymous_session_hash)
+    claims = Claim.__table__.c
+    statement = select(claims.claim_id).where(
+        claims.anonymous_session_hash == anonymous_session_hash,
+    ).limit(1)
+    try:
+        result = await session.execute(statement)
+        return result.scalar_one_or_none() is not None
+    except Exception as exc:
+        raise ClaimStorageError("Unable to read claim storage.") from exc
+
+
 async def get_owned_claim_result(
     claim_id: UUID, anonymous_session_hash: str, *, session: AsyncSession,
 ) -> dict[str, Any] | None:

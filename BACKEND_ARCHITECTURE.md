@@ -336,6 +336,14 @@ Implementation: run keyword search (Postgres `ts_rank_cd` on a `tsvector` column
 
 ### 5.4 Shared legal corpus (schema `shared`)
 
+**Implemented Step 19 extension:** see [shared corpus schema and operations](app/shared/corpus/README.md).
+The SQL sketch below is the original proposal. The implemented schema retains
+UUID identities and adds stable textual chunk IDs, original-ID provenance,
+embedding input/model provenance and parent context. C3 uses its own cosine
+retrieval mapping; other shared retrieval contracts remain unchanged.
+Exact vector search is retained pending PostgreSQL verification; the proposed
+HNSW index below is not created by the initial migration.
+
 ```sql
 CREATE SCHEMA IF NOT EXISTS shared;
 

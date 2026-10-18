@@ -121,6 +121,23 @@ class RepositoryTests(unittest.IsolatedAsyncioTestCase):
                     self.assertEqual(compiled.params["claim_id_1"], CLAIM_ID)
         self.assert_caller_owned_transaction()
 
+    async def test_anonymous_session_check_is_read_only_and_scoped(self):
+        result = MagicMock()
+        result.scalar_one_or_none.return_value = CLAIM_ID
+        self.session.execute.return_value = result
+        self.assertTrue(await repo.anonymous_session_has_claim(OWNER, session=self.session))
+        compiled = self.compiled()
+        self.assertIn("SELECT c3.claims.claim_id", str(compiled))
+        self.assertIn("WHERE c3.claims.anonymous_session_hash =", str(compiled))
+        self.assertEqual(compiled.params["anonymous_session_hash_1"], OWNER)
+        self.assert_caller_owned_transaction()
+
+        self.session.execute.reset_mock()
+        result.scalar_one_or_none.return_value = None
+        self.session.execute.return_value = result
+        self.assertFalse(await repo.anonymous_session_has_claim(OWNER, session=self.session))
+        self.session.execute.assert_awaited_once()
+
     async def test_completed_snapshot_is_returned_unchanged(self):
         payload = {"claim_verdict": None, "insufficient_evidence": True,
                    "citations": [], "evidence": {"passages": []}, "extra": [1, 2]}

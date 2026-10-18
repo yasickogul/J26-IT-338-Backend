@@ -129,6 +129,14 @@ def translate_claim(
         return _result(
             original_text, source_language, status="failed", error_code=exc.code,
         )
+    except Exception:
+        # Provider implementations are untrusted dependency boundaries.  Do
+        # not leak provider exceptions into claim processing or replace the
+        # source claim; classify unexpected failures safely.
+        return _result(
+            original_text, source_language, status="failed",
+            error_code="provider_error",
+        )
 
     if (
         not isinstance(response, TranslationProviderResponse)
