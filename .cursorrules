@@ -1,0 +1,9 @@
+You are working on the Smart Civil Case Analysis Platform backend.
+Read BACKEND_ARCHITECTURE.md before writing code.
+- I work on ONE component (C1/C2/C3/C4). Only edit app/components/<my_component>/.
+- Never modify other components, app/core or app/shared unless I explicitly say so.
+- Never import another component's internals; use app.shared.* or their public.py only.
+- Async FastAPI, Pydantic v2, SQLAlchemy 2.x async, own schema "<cN>" for all tables.
+- LLM/embeddings only via app.core.llm / app.core.embeddings.
+- Corpus retrieval only via app.shared.retrieval.HybridRetriever.
+- All AI outputs grounded in retrieved sources with citations. Add tests for every service function.
