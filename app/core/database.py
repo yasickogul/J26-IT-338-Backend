@@ -39,11 +39,12 @@ def normalize_async_database_url(url: str) -> str:
     return urlunparse(parsed._replace(query=urlencode(query)))
 
 
-def _build_engine() -> AsyncEngine | None:
-    if not settings.database_url:
+def _build_engine(url: str | None = None) -> AsyncEngine | None:
+    raw = url if url is not None else settings.database_url
+    if not raw:
         return None
     return create_async_engine(
-        normalize_async_database_url(settings.database_url),
+        normalize_async_database_url(raw),
         pool_pre_ping=True,  # Neon autosuspends idle computes
         pool_size=5,
         max_overflow=5,
@@ -52,6 +53,21 @@ def _build_engine() -> AsyncEngine | None:
 
 engine = _build_engine()
 SessionLocal = async_sessionmaker(engine, expire_on_commit=False) if engine else None
+
+def _resolve_direct_url() -> str:
+    """Prefer DATABASE_URL_DIRECT; else strip '-pooler' from the pooled host."""
+    direct = (settings.database_url_direct or "").strip()
+    if direct and "USER:PASS" not in direct and "@HOST" not in direct:
+        return direct
+    pooled = settings.database_url or ""
+    return pooled.replace("-pooler", "")
+
+
+_direct_url = _resolve_direct_url()
+direct_engine = _build_engine(_direct_url) if _direct_url else None
+DirectSessionLocal = (
+    async_sessionmaker(direct_engine, expire_on_commit=False) if direct_engine else None
+)
 
 
 async def get_session() -> AsyncIterator[AsyncSession]:
