@@ -22,6 +22,7 @@ from .claim_lifecycle_contract import (
     _require_uuid, _result_snapshot,
 )
 from .models import Claim, VerificationResult
+from app.shared.corpus.models import LegalDocument
 
 
 class ClaimPersistenceError(RuntimeError):
@@ -134,6 +135,60 @@ async def get_owned_claim_result(
         return dict(row) if row is not None else None
     except Exception as exc:
         raise ClaimStorageError("Unable to read claim storage.") from exc
+
+
+async def list_owned_claim_history(
+    anonymous_session_hash: str, *, page: int, page_size: int,
+    session: AsyncSession,
+) -> list[dict[str, Any]]:
+    """Return one owner's claims with the persisted verdict, newest first."""
+    _require_owner_hash(anonymous_session_hash)
+    if type(page) is not int or page < 1:
+        raise ValueError("page must be a positive integer")
+    if type(page_size) is not int or not 1 <= page_size <= 100:
+        raise ValueError("page_size must be between 1 and 100")
+    claims = Claim.__table__
+    results = VerificationResult.__table__
+    statement = select(
+        claims.c.claim_id, claims.c.extracted_claim, claims.c.processing_status,
+        claims.c.created_at, results.c.verdict,
+    ).select_from(
+        claims.outerjoin(results, results.c.claim_id == claims.c.claim_id)
+    ).where(
+        claims.c.anonymous_session_hash == anonymous_session_hash,
+    ).order_by(
+        claims.c.created_at.desc(), claims.c.claim_id.desc(),
+    ).offset((page - 1) * page_size).limit(page_size)
+    try:
+        result = await session.execute(statement)
+        return [dict(row) for row in result.mappings().all()]
+    except Exception as exc:
+        raise ClaimStorageError("Unable to read claim history.") from exc
+
+
+async def list_legal_sources(
+    *, legal_domain: str | None, session: AsyncSession,
+) -> list[dict[str, Any]]:
+    """List shared legal-document metadata without exposing full source text."""
+    if legal_domain is not None and (
+        not isinstance(legal_domain, str) or not legal_domain.strip()
+    ):
+        raise ValueError("legal_domain must be nonblank when provided")
+    documents = LegalDocument.__table__
+    statement = select(
+        documents.c.source_id, documents.c.title, documents.c.source_type,
+        documents.c.citation, documents.c.language, documents.c.source_url,
+        documents.c.metadata,
+    ).order_by(documents.c.title, documents.c.source_id)
+    if legal_domain is not None:
+        statement = statement.where(
+            documents.c.metadata["legal_domain"].as_string() == legal_domain.strip()
+        )
+    try:
+        result = await session.execute(statement)
+        return [dict(row) for row in result.mappings().all()]
+    except Exception as exc:
+        raise ClaimStorageError("Unable to read legal-source storage.") from exc
 
 
 @asynccontextmanager
