@@ -1,5 +1,6 @@
 """Focused mocked tests for the standalone legal-claim translation contract."""
 
+import asyncio
 import unittest
 
 from app.components.c3_misinformation.pipeline.claim_translation import (
@@ -193,6 +194,14 @@ class ClaimTranslationTests(unittest.TestCase):
             translate_claim(
                 "தமிழ் உரை.", "ta", provider=MockTranslationProvider(error=RuntimeError("unexpected")),
             )
+
+    def test_provider_cancellation_propagates(self):
+        error = asyncio.CancelledError()
+        with self.assertRaises(asyncio.CancelledError) as caught:
+            translate_claim(
+                "தமிழ் உரை.", "ta", provider=MockTranslationProvider(error=error),
+            )
+        self.assertIs(caught.exception, error)
 
 
 if __name__ == "__main__":

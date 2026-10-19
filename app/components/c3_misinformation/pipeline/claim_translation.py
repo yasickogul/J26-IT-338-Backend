@@ -94,6 +94,8 @@ def translate_claim(
     English is a no-op. Uncertain, unsupported, or mixed-language input is not
     guessed or sent to a whole-text translator. A provider must be explicitly
     injected; this module has no default or fabricated translator.
+    Expected provider errors return safe codes; unexpected exceptions propagate
+    so callers can apply their own integration fallback policy.
     """
     if not isinstance(original_text, str):
         raise TypeError("original_text must be a string")
@@ -128,14 +130,6 @@ def translate_claim(
     except TranslationProviderError as exc:
         return _result(
             original_text, source_language, status="failed", error_code=exc.code,
-        )
-    except Exception:
-        # Provider implementations are untrusted dependency boundaries.  Do
-        # not leak provider exceptions into claim processing or replace the
-        # source claim; classify unexpected failures safely.
-        return _result(
-            original_text, source_language, status="failed",
-            error_code="provider_error",
         )
 
     if (
