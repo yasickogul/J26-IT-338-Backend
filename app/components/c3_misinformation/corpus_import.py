@@ -15,7 +15,7 @@ from typing import Any
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.shared.corpus.ingest import (
+from .reviewed_corpus_artifacts import (
     validate_artifacts as validate_reviewed_artifacts,
 )
 
