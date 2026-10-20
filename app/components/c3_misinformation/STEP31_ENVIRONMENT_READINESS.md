@@ -82,8 +82,8 @@ ownership code was changed in Step 31.
 
 ## Git status
 
-Branch: `pirakash`  
-Staged files: `0`  
-Existing staged/unstaged/untracked work: preserved  
-Package installation: not performed  
+Branch: `pirakash`
+Staged files: `0`
+Existing staged/unstaged/untracked work: preserved
+Package installation: not performed
 Database access: not attempted

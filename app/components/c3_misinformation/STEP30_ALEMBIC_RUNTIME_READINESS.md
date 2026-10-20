@@ -110,9 +110,9 @@ Blocked or unexecuted:
 
 ## Git state
 
-Branch: `pirakash`  
-Staged files: `0`  
+Branch: `pirakash`
+Staged files: `0`
 Migration/configuration files changed in this step: documentation only; the
-Step 29 migration was preserved unchanged.  
+Step 29 migration was preserved unchanged.
 No reset, restore, clean, stage, commit, merge, push, upgrade, downgrade, or
 stamp command was used.

@@ -125,7 +125,7 @@ change that runtime policy or infer deployment readiness from static files.
 
 ## Git state
 
-Branch: `pirakash`  
-Staging: empty  
-Database changes executed: none  
+Branch: `pirakash`
+Staging: empty
+Database changes executed: none
 History/staging commands used: none
