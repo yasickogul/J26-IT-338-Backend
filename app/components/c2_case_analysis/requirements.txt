@@ -1,0 +1,27 @@
+# --- Web API ---
+fastapi>=0.110
+uvicorn[standard]>=0.29
+python-multipart>=0.0.9
+python-dotenv>=1.0
+
+# --- Document reading (Notebook cells 5 / 13) ---
+pymupdf
+easyocr
+pillow
+numpy
+
+# --- Retrieval / embeddings (Notebook cells 11-12, 19) ---
+torch
+sentence-transformers
+qdrant-client>=1.10
+
+# --- LLM via OpenRouter (Notebook cells 7, 20, 21) ---
+openai>=1.30
+
+# --- Few-shot sampling + knowledge-base build (Notebook cells 2-4, 16-17) ---
+datasets
+pandas
+tqdm
+
+# --- PDF report export (Notebook cell 26) ---
+reportlab
