@@ -1,7 +1,7 @@
 """Mocked async repository checks; no PostgreSQL transaction guarantees implied."""
 
-from datetime import datetime, timezone
 import unittest
+from datetime import UTC, datetime
 from unittest.mock import MagicMock, create_autospec
 from uuid import UUID
 
@@ -11,7 +11,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.components.c3_misinformation import repository as repo
 from app.components.c3_misinformation.anonymous_claim_session import session_token_hash
-
 
 CLAIM_ID = UUID("03030303-0303-4303-8303-030303030303")
 OWNER = session_token_hash("a" * 43)
@@ -98,7 +97,7 @@ class RepositoryTests(unittest.IsolatedAsyncioTestCase):
         for status in ("queued", "processing", "completed", "failed"):
             with self.subTest(status=status):
                 row = {"claim_id": CLAIM_ID, "processing_status": status,
-                       "queued_at": datetime(2026, 1, 1, tzinfo=timezone.utc),
+                       "queued_at": datetime(2026, 1, 1, tzinfo=UTC),
                        "started_at": None, "completed_at": None, "failed_at": None,
                        "failure_category": "interrupted" if status == "failed" else None}
                 self.return_row(row)
@@ -137,6 +136,23 @@ class RepositoryTests(unittest.IsolatedAsyncioTestCase):
         self.session.execute.return_value = result
         self.assertFalse(await repo.anonymous_session_has_claim(OWNER, session=self.session))
         self.session.execute.assert_awaited_once()
+
+    async def test_legal_sources_use_only_c3_owned_metadata(self):
+        result = MagicMock()
+        result.mappings.return_value.all.return_value = []
+        self.session.execute.return_value = result
+
+        self.assertEqual(
+            await repo.list_legal_sources(
+                legal_domain="labour", session=self.session,
+            ),
+            [],
+        )
+        sql = str(self.compiled())
+        self.assertIn("FROM c3.legal_sources", sql)
+        self.assertIn("c3.legal_sources.legal_domain =", sql)
+        self.assertNotIn("shared.", sql)
+        self.assert_caller_owned_transaction()
 
     async def test_completed_snapshot_is_returned_unchanged(self):
         payload = {"claim_verdict": None, "insufficient_evidence": True,

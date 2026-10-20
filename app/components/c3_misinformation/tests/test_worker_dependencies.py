@@ -2,12 +2,14 @@
 
 import sys
 import threading
-from types import ModuleType
 import unittest
+from types import ModuleType
 from unittest.mock import AsyncMock, patch
 
 from app.components.c3_misinformation import worker_dependencies as dependencies
-from app.components.c3_misinformation.agents.gemini_adapter import GeminiConfigurationError
+from app.components.c3_misinformation.agents.gemini_adapter import (
+    GeminiConfigurationError,
+)
 from app.components.c3_misinformation.pipeline.labse_query_embedding import MODEL_NAME
 from app.components.c3_misinformation.prompts.rag_prompt import ClaimInput
 from app.components.c3_misinformation.rag_service_async import ThreadedGeminiProvider
@@ -75,7 +77,7 @@ class WorkerDependencyTests(unittest.IsolatedAsyncioTestCase):
         ):
             await provider.generate_json({"prompt": "fixture"}, {"type": "object"})
 
-    async def test_packet_builder_uses_shared_corpus_read_only_and_closes_session(self):
+    async def test_packet_builder_uses_c3_corpus_read_only_and_closes_session(self):
         session = FakeSession()
         factory = unittest.mock.Mock(return_value=session)
         embedder = AsyncMock()
@@ -87,7 +89,7 @@ class WorkerDependencyTests(unittest.IsolatedAsyncioTestCase):
         )
         expected_packet = {"evidence": [{"chunk_id": "fixture"}]}
         with patch.object(
-            dependencies, "build_shared_evidence_packet",
+            dependencies, "build_c3_evidence_packet",
             new=AsyncMock(return_value=expected_packet),
         ) as build:
             result = await composed.evidence_packet_builder(
@@ -122,14 +124,13 @@ class WorkerDependencyTests(unittest.IsolatedAsyncioTestCase):
         )
         failure = RuntimeError("private retrieval failure")
         with patch.object(
-            dependencies, "build_shared_evidence_packet",
+            dependencies, "build_c3_evidence_packet",
             new=AsyncMock(side_effect=failure),
-        ):
-            with self.assertRaisesRegex(RuntimeError, "private retrieval failure") as caught:
-                await composed.evidence_packet_builder(
-                    "legal query", top_k=5, source_id=None,
-                    legal_domain=None, language=None,
-                )
+        ), self.assertRaisesRegex(RuntimeError, "private retrieval failure") as caught:
+            await composed.evidence_packet_builder(
+                "legal query", top_k=5, source_id=None,
+                legal_domain=None, language=None,
+            )
         self.assertIs(caught.exception, failure)
         session.rollback.assert_awaited_once()
         session.close.assert_awaited_once()
@@ -171,12 +172,11 @@ class WorkerDependencyTests(unittest.IsolatedAsyncioTestCase):
     def test_configured_composer_fails_explicitly_without_existing_database_factory(self):
         from app.core import database
 
-        with patch.object(database, "SessionLocal", None):
-            with self.assertRaisesRegex(
-                dependencies.WorkerDependencyConfigurationError,
-                "existing DATABASE_URL-backed session factory",
-            ):
-                dependencies.create_configured_worker_dependencies()
+        with patch.object(database, "SessionLocal", None), self.assertRaisesRegex(
+            dependencies.WorkerDependencyConfigurationError,
+            "existing DATABASE_URL-backed session factory",
+        ):
+            dependencies.create_configured_worker_dependencies()
 
     def test_configured_composer_reuses_sessionmaker_without_creating_a_session(self):
         from app.core import database
@@ -208,7 +208,7 @@ class WorkerDependencyTests(unittest.IsolatedAsyncioTestCase):
              patch.object(dependencies, "embed_text", side_effect=encode):
             builder = composed.evidence_packet_builder
             with patch.object(
-                dependencies, "build_shared_evidence_packet",
+                dependencies, "build_c3_evidence_packet",
                 new=AsyncMock(side_effect=embed_from_packet),
             ):
                 encoded = await builder(

@@ -7,12 +7,11 @@ default RAG implementation or call a blocking provider on the event loop.
 from __future__ import annotations
 
 import asyncio
-from concurrent.futures import ThreadPoolExecutor
-from functools import partial
 import inspect
-import os
 from collections.abc import Awaitable, Callable
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import suppress
+from functools import partial
 from typing import Any
 
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -20,20 +19,20 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from . import repository
 from .claim_lifecycle_contract import (
     FAILURE_CATEGORIES,
+    ClaimedTextClaim,
     ClaimStateError,
     ClaimStorageError,
-    ClaimedTextClaim,
 )
 from .claim_worker_contract import ClaimExtractionWorkerError, WorkerOutcome
-from .rag_contract import RagResult, RagServiceError
-from .rag_response import serialize_rag_result
+from .config import claim_extraction_enabled
 from .pipeline.claim_extraction import (
     ClaimExtractionProvider,
     ClaimExtractionResult,
     GeminiClaimExtractionProvider,
     extract_legal_claim,
 )
-
+from .rag_contract import RagResult, RagServiceError
+from .rag_response import serialize_rag_result
 
 AsyncSessionFactory = Callable[[], AsyncSession | Awaitable[AsyncSession]]
 AsyncAnalyzer = Callable[[str], Awaitable[RagResult]]
@@ -42,12 +41,7 @@ ExtractorFactory = Callable[[], ClaimExtractionProvider]
 
 def get_claim_extraction_enabled() -> bool:
     """Read the original opt-in extraction feature flag."""
-    value = os.getenv("COMPNET_CLAIM_EXTRACTION_ENABLED", "false").strip().casefold()
-    if value in {"1", "true", "yes", "on"}:
-        return True
-    if value in {"0", "false", "no", "off", ""}:
-        return False
-    raise RuntimeError("COMPNET_CLAIM_EXTRACTION_ENABLED must be a boolean value.")
+    return claim_extraction_enabled()
 
 
 def _extraction_provenance(result: ClaimExtractionResult) -> dict[str, str | None]:
@@ -124,7 +118,7 @@ async def _renew(
             return
         except asyncio.CancelledError:
             raise
-        except Exception:
+        except Exception:  # noqa: BLE001, S112 - retry transient renewal next interval
             # A transient renewal failure does not transfer ownership.  The
             # next interval gets another chance, matching the source worker.
             continue
@@ -218,8 +212,8 @@ async def process_one_claim(
     """Recover and process at most one queued claim asynchronously.
 
     ``analysis`` must be an async callable accepting claim text and a
-    ``top_k`` keyword argument.  It is intentionally required because C3 has
-    no migrated production RAG service yet.
+    ``top_k`` keyword argument. Production composition injects the C3-owned
+    corpus RAG adapter; tests may inject a deterministic offline adapter.
     """
     if extraction_enabled is None:
         extraction_enabled = get_claim_extraction_enabled()
@@ -270,7 +264,7 @@ async def process_one_claim(
     except ClaimStateError:
         await _recover(session_factory)
         return WorkerOutcome(claim.claim_id, "ownership_lost")
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001 - worker maps failures to safe categories
         if isinstance(exc, ClaimStorageError):
             category = "result_storage"
         elif isinstance(exc, ClaimExtractionWorkerError):
@@ -292,7 +286,7 @@ async def process_one_claim(
         # half-cancelled; force-cancel only if it does not finish promptly.
         try:
             await asyncio.wait_for(asyncio.shield(renewal), timeout=2.0)
-        except asyncio.TimeoutError:
+        except TimeoutError:
             renewal.cancel()
             with suppress(asyncio.CancelledError):
                 await renewal

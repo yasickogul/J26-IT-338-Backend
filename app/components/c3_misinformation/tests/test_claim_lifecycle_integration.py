@@ -1,9 +1,9 @@
 """Offline vertical-slice tests for the C3 claim lifecycle."""
 
 import asyncio
-from datetime import datetime, timezone
 import json
 import unittest
+from datetime import UTC, datetime
 from unittest.mock import AsyncMock, patch
 from uuid import UUID, uuid4
 
@@ -38,11 +38,10 @@ from app.components.c3_misinformation.rag_contract import RagRetrievalError
 from app.components.c3_misinformation.router import router as c3_router
 from app.core.database import get_session
 
-
 CLAIM_ID = UUID("11111111-1111-4111-8111-111111111111")
 WORKER_TOKEN = UUID("22222222-2222-4222-8222-222222222222")
 OTHER_TOKEN = "B" * 43
-NOW = datetime(2026, 10, 18, 12, 0, tzinfo=timezone.utc)
+NOW = datetime(2026, 10, 18, 12, 0, tzinfo=UTC)
 EVIDENCE_ID = "chunk:LEGAL-001"
 
 
@@ -341,7 +340,7 @@ class ClaimLifecycleIntegrationTests(unittest.IsolatedAsyncioTestCase):
         )
         return dependencies, adapter, patch.object(
             worker_dependencies,
-            "build_shared_evidence_packet",
+            "build_c3_evidence_packet",
             new=AsyncMock(side_effect=build_evidence),
         )
 
@@ -643,12 +642,11 @@ class ClaimLifecycleIntegrationTests(unittest.IsolatedAsyncioTestCase):
                 WORKER_TOKEN,
                 self.store.claim["cleaned_text"],
             )),
-        ):
-            with evidence_patch:
-                outcome = await claim_worker_runner.run_configured_worker(
-                    dependencies=dependencies,
-                    config=claim_worker_runner.WorkerRunnerConfig(lease_seconds=60),
-                )
+        ), evidence_patch:
+            outcome = await claim_worker_runner.run_configured_worker(
+                dependencies=dependencies,
+                config=claim_worker_runner.WorkerRunnerConfig(lease_seconds=60),
+            )
         self.assertEqual(outcome.status, "ownership_lost")
         self.assertEqual(self.store.failure_writes, [])
 
@@ -672,7 +670,7 @@ class ClaimLifecycleIntegrationTests(unittest.IsolatedAsyncioTestCase):
 
         with patch.object(
             worker_dependencies,
-            "build_shared_evidence_packet",
+            "build_c3_evidence_packet",
             new=AsyncMock(side_effect=blocked_evidence),
         ):
             task = asyncio.create_task(claim_worker_runner.run_configured_worker(

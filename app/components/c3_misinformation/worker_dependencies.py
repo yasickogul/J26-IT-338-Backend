@@ -1,17 +1,17 @@
 """Lazy production composition for the explicitly invoked C3 claim worker.
 
-Runtime prerequisites are an existing async session factory, applied C3 and
-shared-corpus PostgreSQL schemas, cached LaBSE weights, and ``GEMINI_API_KEY``
+Runtime prerequisites are an existing async session factory, the applied C3
+claim and legal-corpus PostgreSQL schemas, cached LaBSE weights, and ``GEMINI_API_KEY``
 plus ``google-genai`` when evidence requires hosted analysis. Composition
 performs no database, model, or provider operation.
 """
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Awaitable, Callable
-from dataclasses import dataclass
 import inspect
 import threading
+from collections.abc import Awaitable, Callable
+from dataclasses import dataclass
 from threading import Lock
 from typing import Any
 
@@ -20,14 +20,13 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from .agents.gemini_adapter import DEFAULT_MODEL, GeminiAdapter
 from .claim_worker import AsyncAnalyzer
+from .pipeline.c3_corpus_evidence import build_c3_evidence_packet
 from .pipeline.claim_input_tokens import validate_claim_input_tokens
 from .pipeline.labse_query_embedding import EXPECTED_DIMENSION, MODEL_NAME, embed_text
-from .pipeline.retrieval_adapter import AsyncQueryEmbedder
-from .pipeline.shared_corpus_evidence import build_shared_evidence_packet
 from .pipeline.multilingual_claim_adapter import MultilingualClaimAdapter
+from .pipeline.retrieval_adapter import AsyncQueryEmbedder
 from .rag_service_async import AsyncRagService, ThreadedGeminiProvider
 from .worker_rag_adapter import create_worker_rag_analyzer
-
 
 AsyncSessionFactory = Callable[[], AsyncSession | Awaitable[AsyncSession]]
 _labse_encoder: Any | None = None
@@ -87,18 +86,15 @@ def _local_labse_embedder() -> AsyncQueryEmbedder:
             nonlocal value, error
             try:
                 value = _embed_with_cached_labse(query)
-            except BaseException as exc:
+            except BaseException as exc:  # noqa: BLE001 - transfer thread outcome
                 error = exc
             finally:
                 finished.set()
 
         thread = threading.Thread(target=work, name="c3-labse-embedder", daemon=True)
         thread.start()
-        try:
-            while not finished.is_set():
-                await asyncio.sleep(0.01)
-        except asyncio.CancelledError:
-            raise
+        while not finished.is_set():
+            await asyncio.sleep(0.01)
         thread.join(timeout=0.1)
         if error is not None:
             raise error
@@ -147,7 +143,7 @@ def _embed_with_cached_labse(query: str):
 def create_worker_dependencies(
     *,
     session_factory: AsyncSessionFactory,
-    config: WorkerRuntimeConfig = WorkerRuntimeConfig(),
+    config: WorkerRuntimeConfig | None = None,
     query_embedder: AsyncQueryEmbedder | None = None,
     gemini_adapter_factory: Callable[[], GeminiAdapter] | None = None,
     multilingual_adapter: MultilingualClaimAdapter | None = None,
@@ -160,6 +156,8 @@ def create_worker_dependencies(
     worker lifecycle and lease-renewal sessions remain owned by claim_worker.
     The tokenizer validator can be injected for controlled offline execution.
     """
+    if config is None:
+        config = WorkerRuntimeConfig()
     if not callable(session_factory):
         raise TypeError("session_factory must be callable")
     if not isinstance(config, WorkerRuntimeConfig):
@@ -195,7 +193,7 @@ def create_worker_dependencies(
                     "The C3 worker session factory returned an invalid async session."
                 )
             await session.execute(text("SET TRANSACTION READ ONLY"))
-            packet = await build_shared_evidence_packet(
+            packet = await build_c3_evidence_packet(
                 query,
                 session=session,
                 embedder=embedder,
@@ -205,7 +203,7 @@ def create_worker_dependencies(
                 legal_domain=legal_domain,
                 language=language,
             )
-        except BaseException as exc:
+        except BaseException as exc:  # noqa: BLE001 - cleanup must follow any failure
             failure = exc
 
         for cleanup_name in ("rollback", "close"):
@@ -216,7 +214,7 @@ def create_worker_dependencies(
                 cleanup = cleanup_method()
                 if inspect.isawaitable(cleanup):
                     await cleanup
-            except BaseException as exc:
+            except BaseException as exc:  # noqa: BLE001 - preserve primary failure
                 if failure is None:
                     failure = exc
                 else:
@@ -258,7 +256,7 @@ def create_worker_dependencies(
 
 def create_configured_worker_dependencies(
     *,
-    config: WorkerRuntimeConfig = WorkerRuntimeConfig(),
+    config: WorkerRuntimeConfig | None = None,
     query_embedder: AsyncQueryEmbedder | None = None,
     gemini_adapter_factory: Callable[[], GeminiAdapter] | None = None,
     multilingual_adapter: MultilingualClaimAdapter | None = None,

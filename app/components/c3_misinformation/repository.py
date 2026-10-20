@@ -18,11 +18,14 @@ from sqlalchemy import func, insert, literal_column, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from .claim_lifecycle_contract import (
-    FAILURE_CATEGORIES, ClaimedTextClaim, ClaimStateError, ClaimStorageError,
-    _require_uuid, _result_snapshot,
+    FAILURE_CATEGORIES,
+    ClaimedTextClaim,
+    ClaimStateError,
+    ClaimStorageError,
+    _require_uuid,
+    _result_snapshot,
 )
-from .models import Claim, VerificationResult
-from app.shared.corpus.models import LegalDocument
+from .models import Claim, LegalSource, VerificationResult
 
 
 class ClaimPersistenceError(RuntimeError):
@@ -169,20 +172,20 @@ async def list_owned_claim_history(
 async def list_legal_sources(
     *, legal_domain: str | None, session: AsyncSession,
 ) -> list[dict[str, Any]]:
-    """List shared legal-document metadata without exposing full source text."""
+    """List C3-owned legal-source metadata without exposing full source text."""
     if legal_domain is not None and (
         not isinstance(legal_domain, str) or not legal_domain.strip()
     ):
         raise ValueError("legal_domain must be nonblank when provided")
-    documents = LegalDocument.__table__
+    documents = LegalSource.__table__
     statement = select(
-        documents.c.source_id, documents.c.title, documents.c.source_type,
+        documents.c.source_id, documents.c.title, documents.c.document_type.label("source_type"),
         documents.c.citation, documents.c.language, documents.c.source_url,
         documents.c.metadata,
     ).order_by(documents.c.title, documents.c.source_id)
     if legal_domain is not None:
         statement = statement.where(
-            documents.c.metadata["legal_domain"].as_string() == legal_domain.strip()
+            documents.c.legal_domain == legal_domain.strip()
         )
     try:
         result = await session.execute(statement)

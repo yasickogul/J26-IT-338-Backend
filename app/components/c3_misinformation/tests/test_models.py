@@ -2,11 +2,26 @@
 
 import unittest
 
-from sqlalchemy import CheckConstraint, DateTime, ForeignKey, Numeric, SmallInteger, String, Text, inspect
+from sqlalchemy import (
+    CheckConstraint,
+    DateTime,
+    ForeignKey,
+    Numeric,
+    SmallInteger,
+    String,
+    Text,
+    inspect,
+)
 from sqlalchemy.dialects.postgresql import CHAR, JSONB, UUID, dialect
 from sqlalchemy.schema import CreateIndex, CreateTable
 
-from app.components.c3_misinformation.models import Base, Claim, VerificationResult
+from app.components.c3_misinformation.models import (
+    Base,
+    Claim,
+    LegalChunk,
+    LegalSource,
+    VerificationResult,
+)
 
 
 class C3ModelTests(unittest.TestCase):
@@ -14,11 +29,29 @@ class C3ModelTests(unittest.TestCase):
         self.claims = Claim.__table__
         self.results = VerificationResult.__table__
 
-    def test_only_c3_claim_and_result_tables_are_registered(self):
-        self.assertEqual(set(Base.metadata.tables), {"c3.claims", "c3.verification_results"})
+    def test_c3_claim_result_and_legal_corpus_tables_are_registered(self):
+        self.assertEqual(set(Base.metadata.tables), {
+            "c3.claims", "c3.verification_results",
+            "c3.legal_sources", "c3.legal_chunks",
+        })
         self.assertEqual((self.claims.name, self.claims.schema), ("claims", "c3"))
         self.assertEqual((self.results.name, self.results.schema), ("verification_results", "c3"))
         self.assertIs(Claim.metadata, VerificationResult.metadata)
+
+    def test_independent_c3_corpus_uses_labse_768_and_source_provenance(self):
+        sources = LegalSource.__table__
+        chunks = LegalChunk.__table__
+        self.assertEqual(str(chunks.c.embedding.type), "VECTOR(768)")
+        self.assertFalse(chunks.c.embedding.nullable)
+        self.assertTrue(sources.c.source_id.unique)
+        self.assertTrue(chunks.c.chunk_id.unique)
+        foreign_key = next(iter(chunks.c.source_id.foreign_keys))
+        self.assertEqual(foreign_key.target_fullname, "c3.legal_sources.source_id")
+        self.assertEqual(foreign_key.ondelete, "RESTRICT")
+        self.assertIn("local_source_path", sources.c)
+        self.assertIn("source_file_sha256", sources.c)
+        self.assertIn("original_chunk_id", chunks.c)
+        self.assertIn("embedding_model", chunks.c)
 
     def test_claim_columns_match_compnet_schema(self):
         self.assertEqual(list(self.claims.columns.keys()), [

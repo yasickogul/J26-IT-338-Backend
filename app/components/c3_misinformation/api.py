@@ -2,7 +2,6 @@
 
 import os
 from collections.abc import Callable
-from functools import lru_cache
 from typing import Any
 from uuid import UUID
 
@@ -21,19 +20,22 @@ from .anonymous_claim_session import (
     valid_session_token,
 )
 from .api_schemas import (
-    ClaimHistoryResponse, ClaimResultResponse, ClaimSubmissionRequest,
-    ClaimSubmissionResponse, LegalSourceResponse,
+    ClaimHistoryResponse,
+    ClaimResultResponse,
+    ClaimSubmissionRequest,
+    ClaimSubmissionResponse,
+    LegalSourceResponse,
 )
 from .claim_lifecycle_contract import ClaimStorageError
+from .config import language_detection_enabled
 from .pipeline.claim_input_tokens import (
     EmbeddingInputTooLongError,
     TokenizerUnavailableError,
     validate_claim_input_tokens,
 )
-from .pipeline.fasttext_language_identifier import FastTextLanguageIdentifier
+from .pipeline.fasttext_language_identifier import get_fasttext_language_identifier
 from .pipeline.language_detection import detect_language
 from .pipeline.text_preprocessing import clean_text
-
 
 router = APIRouter(tags=["C3 claims"])
 ClaimTokenValidator = Callable[[list[str]], list[int]]
@@ -56,24 +58,13 @@ def _error_response(
     )
 
 
-def _language_detection_enabled() -> bool:
-    value = os.getenv("COMPNET_LANGUAGE_DETECTION_ENABLED", "false").strip().casefold()
-    if value in {"1", "true", "yes", "on"}:
-        return True
-    if value in {"0", "false", "no", "off", ""}:
-        return False
-    raise RuntimeError("COMPNET_LANGUAGE_DETECTION_ENABLED must be a boolean value.")
-
-
-@lru_cache(maxsize=1)
-def _get_language_identifier() -> FastTextLanguageIdentifier:
-    return FastTextLanguageIdentifier()
-
-
 def _detect_claim_language(text: str) -> str | None:
-    if not _language_detection_enabled():
+    if not language_detection_enabled():
         return None
-    result = detect_language(text, language_identifier=_get_language_identifier())
+    result = detect_language(
+        text,
+        language_identifier=get_fasttext_language_identifier(),
+    )
     return result.label if result.status == "detected" else None
 
 
@@ -91,8 +82,10 @@ async def submit_claim(
     body: ClaimSubmissionRequest,
     request: Request,
     response: Response,
-    session: AsyncSession = Depends(get_session),
-    token_validator: ClaimTokenValidator = Depends(get_claim_token_validator),
+    session: AsyncSession = Depends(get_session),  # noqa: B008 - FastAPI DI
+    token_validator: ClaimTokenValidator = Depends(  # noqa: B008 - FastAPI DI
+        get_claim_token_validator
+    ),
 ) -> ClaimSubmissionResponse | JSONResponse:
     """Persist one validated claim without running retrieval or a worker."""
     response.headers["Cache-Control"] = "no-store"
@@ -120,11 +113,11 @@ async def submit_claim(
         return _error_response(
             503, "claim_tokenizer_unavailable", category="preparation",
         )
-    except Exception:
+    except Exception:  # noqa: BLE001 - API boundary returns a safe error
         return _error_response(500, "claim_validation_failed", category="preparation")
     try:
         detected_language = _detect_claim_language(cleaned_text)
-    except Exception:
+    except Exception:  # noqa: BLE001 - API boundary returns a safe error
         return _error_response(500, "claim_language_detection_failed", category="preparation")
 
     cookie_name, secure_cookie = _cookie_name(request)
@@ -153,7 +146,7 @@ async def submit_claim(
                 detected_language=detected_language,
                 session=session,
             )
-    except Exception:
+    except Exception:  # noqa: BLE001 - API boundary returns a safe error
         return _error_response(500, "claim_persistence_failed", category="storage")
 
     if issue_cookie:
@@ -177,7 +170,7 @@ async def read_claim_result(
     claim_id: UUID,
     request: Request,
     response: Response,
-    session: AsyncSession = Depends(get_session),
+    session: AsyncSession = Depends(get_session),  # noqa: B008 - FastAPI DI
 ) -> ClaimResultResponse | JSONResponse:
     """Return lifecycle state and the exact stored result to its owner."""
     response.headers["Cache-Control"] = "no-store"
@@ -192,7 +185,7 @@ async def read_claim_result(
         )
     except ClaimStorageError:
         return _error_response(500, "result_lookup_failed")
-    except Exception:
+    except Exception:  # noqa: BLE001 - API boundary returns a safe error
         return _error_response(500, "result_lookup_failed")
 
     if claim is None:
@@ -227,7 +220,7 @@ async def read_claim_history(
     response: Response,
     page: int = 1,
     page_size: int = 20,
-    session: AsyncSession = Depends(get_session),
+    session: AsyncSession = Depends(get_session),  # noqa: B008 - FastAPI DI
 ) -> ClaimHistoryResponse | JSONResponse:
     """Return only the current anonymous session's prior submissions."""
     response.headers["Cache-Control"] = "no-store"
@@ -257,7 +250,7 @@ async def read_claim_history(
         )
     except ClaimStorageError:
         return _error_response(500, "history_lookup_failed")
-    except Exception:
+    except Exception:  # noqa: BLE001 - API boundary returns a safe error
         return _error_response(500, "history_lookup_failed")
 
 
@@ -265,7 +258,7 @@ async def read_claim_history(
 async def read_legal_sources(
     response: Response,
     legal_domain: str | None = None,
-    session: AsyncSession = Depends(get_session),
+    session: AsyncSession = Depends(get_session),  # noqa: B008 - FastAPI DI
 ) -> list[LegalSourceResponse] | JSONResponse:
     """Expose source metadata for transparency; legal text stays protected."""
     response.headers["Cache-Control"] = "public, max-age=60"
@@ -278,5 +271,5 @@ async def read_legal_sources(
         return _error_response(400, "invalid_legal_domain", category="input")
     except ClaimStorageError:
         return _error_response(500, "legal_sources_lookup_failed")
-    except Exception:
+    except Exception:  # noqa: BLE001 - API boundary returns a safe error
         return _error_response(500, "legal_sources_lookup_failed")

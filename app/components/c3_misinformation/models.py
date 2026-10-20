@@ -12,14 +12,27 @@ from sqlalchemy import (
     DateTime,
     ForeignKey,
     Index,
+    Integer,
     Numeric,
     SmallInteger,
     String,
     Text,
-    text,
+    UniqueConstraint,
 )
-from sqlalchemy.dialects.postgresql import CHAR, JSONB, UUID as PG_UUID
+from sqlalchemy import text as sql_text
+from sqlalchemy.dialects.postgresql import CHAR, JSONB
+from sqlalchemy.dialects.postgresql import UUID as PG_UUID
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
+from sqlalchemy.types import UserDefinedType
+
+
+class Vector768(UserDefinedType):
+    """C3-owned pgvector DDL type; SQL paths use explicit vector casts."""
+
+    cache_ok = True
+
+    def get_col_spec(self, **_kwargs: Any) -> str:
+        return "VECTOR(768)"
 
 
 class Base(DeclarativeBase):
@@ -71,7 +84,7 @@ class Claim(Base):
         ),
         Index(
             "claims_anonymous_session_hash_idx", "anonymous_session_hash",
-            postgresql_where=text("anonymous_session_hash IS NOT NULL"),
+            postgresql_where=sql_text("anonymous_session_hash IS NOT NULL"),
         ),
         {"schema": "c3"},
     )
@@ -84,13 +97,13 @@ class Claim(Base):
     extracted_claim: Mapped[str | None] = mapped_column(Text, nullable=True)
     legal_domain: Mapped[str | None] = mapped_column(String(30), nullable=True)
     created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), nullable=False, server_default=text("CURRENT_TIMESTAMP"),
+        DateTime(timezone=True), nullable=False, server_default=sql_text("CURRENT_TIMESTAMP"),
     )
     processing_status: Mapped[str] = mapped_column(
-        String(16), nullable=False, server_default=text("'queued'"),
+        String(16), nullable=False, server_default=sql_text("'queued'"),
     )
     queued_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), nullable=False, server_default=text("CURRENT_TIMESTAMP"),
+        DateTime(timezone=True), nullable=False, server_default=sql_text("CURRENT_TIMESTAMP"),
     )
     started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
@@ -138,7 +151,130 @@ class VerificationResult(Base):
     retrieval_top_k: Mapped[int] = mapped_column(SmallInteger, nullable=False)
     result_payload: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
     created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), nullable=False, server_default=text("CURRENT_TIMESTAMP"),
+        DateTime(timezone=True), nullable=False, server_default=sql_text("CURRENT_TIMESTAMP"),
     )
 
     claim: Mapped[Claim] = relationship(back_populates="verification_result")
+
+
+class LegalSource(Base):
+    """Stable C3 citation identity for one locally reviewed legal source."""
+
+    __tablename__ = "legal_sources"
+    __table_args__ = (
+        CheckConstraint("btrim(source_id) <> ''", name="legal_sources_source_id_nonblank"),
+        CheckConstraint("btrim(title) <> ''", name="legal_sources_title_nonblank"),
+        CheckConstraint("btrim(legal_domain) <> ''", name="legal_sources_domain_nonblank"),
+        CheckConstraint("btrim(document_type) <> ''", name="legal_sources_type_nonblank"),
+        CheckConstraint("btrim(language) <> ''", name="legal_sources_language_nonblank"),
+        CheckConstraint(
+            "btrim(local_source_path) <> '' AND local_source_path !~ '^/' "
+            "AND local_source_path !~ '(^|/)\\.\\.(/|$)'",
+            name="legal_sources_relative_path",
+        ),
+        CheckConstraint(
+            "source_file_sha256 ~ '^[0-9a-f]{64}$'",
+            name="legal_sources_sha256_format",
+        ),
+        CheckConstraint(
+            "jsonb_typeof(metadata) = 'object'",
+            name="legal_sources_metadata_object",
+        ),
+        {"schema": "c3"},
+    )
+
+    id: Mapped[UUID] = mapped_column(
+        PG_UUID(as_uuid=True), primary_key=True, server_default=sql_text("gen_random_uuid()"),
+    )
+    source_id: Mapped[str] = mapped_column(Text, nullable=False, unique=True)
+    title: Mapped[str] = mapped_column(Text, nullable=False)
+    legal_domain: Mapped[str] = mapped_column(Text, nullable=False)
+    document_type: Mapped[str] = mapped_column(Text, nullable=False)
+    language: Mapped[str] = mapped_column(Text, nullable=False)
+    citation: Mapped[str | None] = mapped_column(Text, nullable=True)
+    source_url: Mapped[str | None] = mapped_column(Text, nullable=True)
+    local_source_path: Mapped[str] = mapped_column(Text, nullable=False)
+    source_file_sha256: Mapped[str] = mapped_column(CHAR(64), nullable=False)
+    source_metadata: Mapped[dict[str, Any]] = mapped_column(
+        "metadata", JSONB, nullable=False, server_default=sql_text("'{}'::jsonb"),
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=sql_text("CURRENT_TIMESTAMP"),
+    )
+    imported_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=sql_text("CURRENT_TIMESTAMP"),
+    )
+
+    chunks: Mapped[list[LegalChunk]] = relationship(back_populates="source")
+
+
+class LegalChunk(Base):
+    """One immutable C3 legal passage with LaBSE/768 provenance."""
+
+    __tablename__ = "legal_chunks"
+    __table_args__ = (
+        CheckConstraint("btrim(chunk_id) <> ''", name="legal_chunks_chunk_id_nonblank"),
+        CheckConstraint(
+            "btrim(original_chunk_id) <> ''",
+            name="legal_chunks_original_chunk_id_nonblank",
+        ),
+        CheckConstraint("chunk_index >= 0", name="legal_chunks_nonnegative_index"),
+        CheckConstraint("btrim(text) <> ''", name="legal_chunks_text_nonblank"),
+        CheckConstraint(
+            "btrim(embedding_text) <> ''",
+            name="legal_chunks_embedding_text_nonblank",
+        ),
+        CheckConstraint(
+            "btrim(embedding_model) <> ''",
+            name="legal_chunks_embedding_model_nonblank",
+        ),
+        CheckConstraint(
+            "jsonb_typeof(metadata) = 'object'",
+            name="legal_chunks_metadata_object",
+        ),
+        CheckConstraint(
+            "parent_context IS NULL OR jsonb_typeof(parent_context) = 'object'",
+            name="legal_chunks_parent_context_object",
+        ),
+        Index("ix_c3_legal_chunks_source", "source_id"),
+        Index("ix_c3_legal_chunks_embedding_model", "embedding_model"),
+        UniqueConstraint(
+            "source_id", "chunk_index", name="legal_chunks_source_position_key",
+        ),
+        {"schema": "c3"},
+    )
+
+    id: Mapped[UUID] = mapped_column(
+        PG_UUID(as_uuid=True), primary_key=True, server_default=sql_text("gen_random_uuid()"),
+    )
+    source_id: Mapped[str] = mapped_column(
+        Text,
+        ForeignKey("c3.legal_sources.source_id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    chunk_id: Mapped[str] = mapped_column(Text, nullable=False, unique=True)
+    original_chunk_id: Mapped[str] = mapped_column(Text, nullable=False)
+    chunk_index: Mapped[int] = mapped_column(Integer, nullable=False)
+    section: Mapped[str | None] = mapped_column(Text, nullable=True)
+    text: Mapped[str] = mapped_column(Text, nullable=False)
+    embedding_text: Mapped[str] = mapped_column(Text, nullable=False)
+    chunk_metadata: Mapped[dict[str, Any]] = mapped_column("metadata", JSONB, nullable=False)
+    parent_context: Mapped[dict[str, Any] | None] = mapped_column(JSONB, nullable=True)
+    paragraph: Mapped[str | None] = mapped_column(Text, nullable=True)
+    embedding_model: Mapped[str] = mapped_column(Text, nullable=False)
+    embedding: Mapped[Any] = mapped_column(Vector768(), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=sql_text("CURRENT_TIMESTAMP"),
+    )
+    imported_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=sql_text("CURRENT_TIMESTAMP"),
+    )
+
+    source: Mapped[LegalSource] = relationship(back_populates="chunks")
+
+
+Index(
+    "ix_c3_legal_chunks_parent",
+    LegalChunk.__table__.c.metadata["source_id"].astext,
+    LegalChunk.__table__.c.metadata["section_label"].astext,
+)
