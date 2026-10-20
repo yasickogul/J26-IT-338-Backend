@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from unittest.mock import AsyncMock
 
 import pytest
@@ -39,7 +39,7 @@ def _fake_extraction(*, intake_id: str = "00000000-0000-0000-0000-000000000001")
         ),
         model_version="stage2-rules-v1",
         disclaimer="This is informational and not legal advice.",
-        created_at=datetime.now(timezone.utc),
+        created_at=datetime.now(UTC),
     )
 
 
