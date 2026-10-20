@@ -51,7 +51,10 @@ Offline tests require the lifecycle SQL to remain identical.
 
 Track this independent lineage in **`c3.alembic_version_c3`**. This is one
 additional bookkeeping table, alongside the two requested application tables.
-It records `c3_team_0001`; it makes no assertion about shared or C1/C2 history.
+The prepared head is now `c3_team_0002`: `c3_team_0001` owns the claim lifecycle
+and `c3_team_0002` adds only `c3.legal_sources` and `c3.legal_chunks`. Neither
+revision makes an assertion about shared or C1/C2 history. The second revision
+is documented in [CORPUS.md](../../CORPUS.md) and has not been applied.
 Alembic supports independent environments with separate version tables:
 https://alembic.sqlalchemy.org/en/latest/cookbook.html#run-multiple-alembic-environments-from-one-ini-file
 

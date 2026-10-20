@@ -1,9 +1,9 @@
-"""UNCONNECTED SQL for CompNet migration 001's public.legal_chunks contract.
+"""Allowlisted PostgreSQL vector-search mappings used by C3 retrieval.
 
-Not a mapping of the proposed shared UUID corpus. Before production wiring,
-the team must approve storage and verify migration 001's columns/constraints,
-pgvector, corpus metadata and LaBSE provenance (not merely vector dimensions).
-The explicit contract selector below selects SQL; it is NOT deployment proof.
+Production C3 composition explicitly selects the C3-owned LaBSE/768 contract.
+Legacy public and shared mappings remain available to their existing explicit
+callers only; there is no automatic fallback between corpus contracts. Selecting
+a contract is not proof that its migration or corpus import has been completed.
 
 All three postgres_* dependencies use caller-owned AsyncSessions. Callers must
 establish a read-only transaction and consistent corpus view across retrieval,
@@ -17,23 +17,31 @@ import numpy as np
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from .labse_query_embedding import MODEL_NAME, EXPECTED_DIMENSION
+from .labse_query_embedding import EXPECTED_DIMENSION, MODEL_NAME
 from .retrieval_contract import RetrievalResult, _validate_filter, _validate_top_k
 
 COMPNET_CORPUS_CONTRACT = "compnet-migration-001-public-legal-chunks"
 SHARED_CORPUS_CONTRACT = "shared-0001-labse"
+C3_CORPUS_CONTRACT = "c3-owned-labse-768"
 
 
 def require_corpus_contract(corpus_contract: str) -> None:
-    if corpus_contract not in (COMPNET_CORPUS_CONTRACT, SHARED_CORPUS_CONTRACT):
-        raise ValueError("Unsupported corpus mapping; CompNet migration 001 contract required")
+    if corpus_contract not in (
+        COMPNET_CORPUS_CONTRACT,
+        SHARED_CORPUS_CONTRACT,
+        C3_CORPUS_CONTRACT,
+    ):
+        raise ValueError("Unsupported corpus mapping")
 
 
 def corpus_table(corpus_contract: str) -> str:
     """Allowlisted schema mapping only; never interpolate caller identifiers."""
     require_corpus_contract(corpus_contract)
-    return ("shared.legal_chunks" if corpus_contract == SHARED_CORPUS_CONTRACT
-            else "public.legal_chunks")
+    return {
+        COMPNET_CORPUS_CONTRACT: "public.legal_chunks",
+        SHARED_CORPUS_CONTRACT: "shared.legal_chunks",
+        C3_CORPUS_CONTRACT: "c3.legal_chunks",
+    }[corpus_contract]
 
 
 def validate_passage(row: Mapping[str, Any]) -> None:
@@ -46,7 +54,7 @@ def validate_passage(row: Mapping[str, Any]) -> None:
         if not isinstance(row[key], str) or not row[key].strip():
             raise ValueError(f"Invalid corpus {key}")
     if not isinstance(row["metadata"], dict):
-        raise ValueError("Corpus metadata must be an object")
+        raise ValueError("Corpus metadata must be an object")  # noqa: TRY004 - stable contract
     if row["parent_context"] is not None and not isinstance(row["parent_context"], dict):
         raise ValueError("Corpus parent_context must be an object or null")
     if row["paragraph"] is not None and not isinstance(row["paragraph"], str):
@@ -78,10 +86,10 @@ async def search(
             or vector.dtype.kind not in "fiu"
             or not np.isfinite(vector).all()):
         raise RuntimeError("Query embedding is not a finite 768-dimensional vector")
-    if corpus_contract == SHARED_CORPUS_CONTRACT and not np.allclose(
+    if corpus_contract in {SHARED_CORPUS_CONTRACT, C3_CORPUS_CONTRACT} and not np.allclose(
         np.linalg.norm(vector), 1.0, atol=1e-5, rtol=1e-5,
     ):
-        raise ValueError("Shared LaBSE query vector must be unit-normalized")
+        raise ValueError("LaBSE query vector must be unit-normalized")
     conditions = ["embedding_model = :embedding_model"]
     parameters = {
         "query_embedding": "[" + ",".join(repr(float(v)) for v in vector) + "]",

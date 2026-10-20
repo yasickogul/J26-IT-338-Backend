@@ -1,9 +1,14 @@
-"""Unconnected parent SELECT for the original CompNet corpus contract only."""
+"""Parent-context lookup for an explicitly selected corpus contract."""
 from typing import Any
+
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from .postgres_vector_search import require_corpus_contract, validate_passage, corpus_table
+from .postgres_vector_search import (
+    corpus_table,
+    require_corpus_contract,
+    validate_passage,
+)
 
 
 async def lookup_parents(

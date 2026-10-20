@@ -1,8 +1,8 @@
-"""Unconnected original-ID SELECT for the original CompNet corpus contract."""
+"""Original chunk provenance lookup for an explicitly selected corpus contract."""
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from .postgres_vector_search import require_corpus_contract, corpus_table
+from .postgres_vector_search import corpus_table, require_corpus_contract
 
 
 async def lookup_original_chunk_id(

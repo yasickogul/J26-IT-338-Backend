@@ -2,22 +2,22 @@
 import importlib.util
 import io
 import os
-from pathlib import Path
 import re
 import runpy
 import unittest
+from pathlib import Path
 from unittest.mock import patch
 
+import sqlalchemy as sa
 from alembic.config import Config
 from alembic.migration import MigrationContext
 from alembic.operations import Operations
 from alembic.script import ScriptDirectory
-import sqlalchemy as sa
-
 
 ROOT = Path(__file__).resolve().parents[1] / "migrations"
 TEAM = ROOT / "team"
 REVISION = TEAM / "versions/c3_team_0001_claim_lifecycle.py"
+CORPUS_REVISION = TEAM / "versions/c3_team_0002_legal_corpus.py"
 
 
 def load_revision(path):
@@ -57,9 +57,16 @@ def render_review_sql():
 class TeamMigrationTests(unittest.TestCase):
     def test_independent_graph_has_no_shared_baseline(self):
         script = ScriptDirectory.from_config(Config(str(TEAM / "alembic.ini")))
-        self.assertEqual(script.get_heads(), ["c3_team_0001"])
-        self.assertEqual([r.revision for r in script.walk_revisions()], ["c3_team_0001"])
+        self.assertEqual(script.get_heads(), ["c3_team_0002"])
+        self.assertEqual(
+            [r.revision for r in script.walk_revisions()],
+            ["c3_team_0002", "c3_team_0001"],
+        )
         self.assertIsNone(script.get_revision("c3_team_0001").down_revision)
+        self.assertEqual(
+            script.get_revision("c3_team_0002").down_revision,
+            "c3_team_0001",
+        )
 
     def test_lifecycle_ddl_matches_original_frozen_migration(self):
         for operation in ("upgrade", "downgrade"):
@@ -75,7 +82,8 @@ class TeamMigrationTests(unittest.TestCase):
             "c3.alembic_version_c3", "c3.claims", "c3.verification_results",
         })
         self.assertNotRegex(sql, r"\b(?:shared|c1|c2|public)\.")
-        self.assertNotRegex(sql, r"\b(?:DROP|TRUNCATE|ALTER|DELETE|UPDATE)\b")
+        self.assertNotRegex(sql, r"\b(?:DROP|TRUNCATE|ALTER|UPDATE)\b")
+        self.assertNotRegex(sql, r"\bDELETE\s+FROM\b")
         self.assertIn("FOREIGN KEY(claim_id) REFERENCES c3.claims", sql)
         self.assertIn("UNIQUE (claim_id)", sql)
         self.assertIn("WHERE anonymous_session_hash IS NOT NULL", sql)
@@ -88,6 +96,30 @@ class TeamMigrationTests(unittest.TestCase):
         self.assertLess(sql.index("RAISE EXCEPTION"), sql.index("DROP TABLE"))
         self.assertNotIn("DROP SCHEMA", sql)
         self.assertNotIn("CASCADE", sql)
+
+    def test_corpus_revision_creates_only_c3_objects_and_preserves_data(self):
+        sql = render_body(CORPUS_REVISION)
+        self.assertEqual(
+            set(re.findall(r"CREATE TABLE ([\w.]+)", sql)),
+            {"c3.legal_sources", "c3.legal_chunks"},
+        )
+        self.assertIn("VECTOR(768) NOT NULL", sql)
+        self.assertIn("REFERENCES c3.legal_sources", sql)
+        self.assertNotRegex(sql, r"\b(?:shared|c1|c2|public)\.")
+        self.assertNotRegex(sql, r"\b(?:DROP|TRUNCATE|ALTER|UPDATE)\b")
+        self.assertNotRegex(sql, r"\bDELETE\s+FROM\b")
+        downgrade = render_body(CORPUS_REVISION, "downgrade")
+        self.assertIn("Refusing to drop nonempty C3 legal corpus tables", downgrade)
+        self.assertNotIn("DROP SCHEMA", downgrade)
+
+    def test_corpus_ddl_matches_canonical_migration(self):
+        canonical = ROOT / "versions/c3_0002_legal_corpus.py"
+        for operation in ("upgrade", "downgrade"):
+            with self.subTest(operation=operation):
+                self.assertEqual(
+                    render_body(CORPUS_REVISION, operation),
+                    render_body(canonical, operation),
+                )
 
     def env_namespace(self):
         # Load the environment's helpers through a mocked offline context only.
