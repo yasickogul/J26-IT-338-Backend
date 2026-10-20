@@ -45,11 +45,22 @@ def _fake_extraction(*, intake_id: str = "00000000-0000-0000-0000-000000000001")
 
 @pytest.mark.unit
 @pytest.mark.asyncio
-async def test_c1_ping_reports_stage2(c1_client):
+async def test_c1_ping_reports_stage3_capabilities(c1_client):
     response = await c1_client.get("/api/v1/c1/ping")
     assert response.status_code == 200
     body = response.json()
-    assert body == {"component": "c1", "status": "ok", "stage": 2}
+    assert body == {
+        "component": "c1",
+        "status": "ok",
+        "stage": 3,
+        "capabilities": {
+            "intake_extraction": True,
+            "semantic_retrieval": True,
+            "hybrid_retrieval": False,
+            "legal_relevance_score": False,
+            "lm_studio_optional": True,
+        },
+    }
 
 
 @pytest.mark.unit
