@@ -1,11 +1,11 @@
 """Offline tests for the local-only LaBSE token admission rule."""
 
 import json
-from pathlib import Path
 import sys
 import tempfile
-from types import ModuleType, SimpleNamespace
 import unittest
+from pathlib import Path
+from types import ModuleType, SimpleNamespace
 from unittest.mock import Mock, patch
 
 from app.components.c3_misinformation.pipeline import claim_input_tokens as tokens
@@ -26,9 +26,11 @@ class ClaimInputTokenTests(unittest.TestCase):
 
     def test_over_limit_reports_first_index_count_and_limit(self):
         tokenizer = Mock(return_value={"input_ids": [[1, 2], [1, 2, 3, 4, 5], [1, 2, 3, 4, 5, 6]]})
-        with patch.object(tokens, "_local_tokenizer_and_limit", return_value=(tokenizer, 4)):
-            with self.assertRaises(tokens.EmbeddingInputTooLongError) as caught:
-                tokens.validate_claim_input_tokens(["first", "second", "third"])
+        with (
+            patch.object(tokens, "_local_tokenizer_and_limit", return_value=(tokenizer, 4)),
+            self.assertRaises(tokens.EmbeddingInputTooLongError) as caught,
+        ):
+            tokens.validate_claim_input_tokens(["first", "second", "third"])
         self.assertEqual((caught.exception.index, caught.exception.token_count, caught.exception.limit),
                          (1, 5, 4))
         self.assertEqual(str(caught.exception),
@@ -47,9 +49,11 @@ class ClaimInputTokenTests(unittest.TestCase):
 
     def test_tokenizer_call_failure_is_wrapped(self):
         tokenizer = Mock(side_effect=RuntimeError("private tokenizer detail"))
-        with patch.object(tokens, "_local_tokenizer_and_limit", return_value=(tokenizer, 256)):
-            with self.assertRaises(tokens.TokenizerUnavailableError) as caught:
-                tokens.validate_claim_input_tokens(["claim"])
+        with (
+            patch.object(tokens, "_local_tokenizer_and_limit", return_value=(tokenizer, 256)),
+            self.assertRaises(tokens.TokenizerUnavailableError) as caught,
+        ):
+            tokens.validate_claim_input_tokens(["claim"])
         self.assertEqual(str(caught.exception), "Local claim tokenizer is unavailable.")
         self.assertIsInstance(caught.exception.__cause__, RuntimeError)
 
@@ -90,9 +94,11 @@ class ClaimInputTokenTests(unittest.TestCase):
                             tokens._local_tokenizer_and_limit()
 
     def test_missing_dependency_is_reported_as_unavailable(self):
-        with patch.dict(sys.modules, {"huggingface_hub": None}):
-            with self.assertRaises(tokens.TokenizerUnavailableError) as caught:
-                tokens._local_tokenizer_and_limit()
+        with (
+            patch.dict(sys.modules, {"huggingface_hub": None}),
+            self.assertRaises(tokens.TokenizerUnavailableError) as caught,
+        ):
+            tokens._local_tokenizer_and_limit()
         self.assertEqual(str(caught.exception), "Local claim tokenizer is unavailable.")
         self.assertIsInstance(caught.exception.__cause__, ImportError)
 

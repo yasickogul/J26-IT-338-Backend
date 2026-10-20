@@ -161,9 +161,11 @@ class ClaimTranslationTests(unittest.TestCase):
         with self.assertRaisesRegex(TypeError, "original_text must be a string"):
             translate_claim(None, "en")
         for language in ("fr", "SI", "", 1):
-            with self.subTest(language=language):
-                with self.assertRaisesRegex(ValueError, "source_language is not supported"):
-                    translate_claim("Claim text", language)
+            with (
+                self.subTest(language=language),
+                self.assertRaisesRegex(ValueError, "source_language is not supported"),
+            ):
+                translate_claim("Claim text", language)
 
     def test_invalid_provider_response_forms(self):
         for response in (

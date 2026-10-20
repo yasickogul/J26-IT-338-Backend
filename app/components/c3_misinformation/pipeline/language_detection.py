@@ -7,12 +7,11 @@ alone is not sufficient evidence of English or a meaningful language mixture.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 import math
 import re
-from typing import Literal, Protocol
 import unicodedata
-
+from dataclasses import dataclass
+from typing import Literal, Protocol
 
 _MIN_MIXED_SCRIPT_WORDS = 2
 
@@ -226,16 +225,15 @@ def detect_language(
             evidence_languages=native,
         )
 
-    if native and "latin" in scripts:
+    if native and "latin" in scripts and (
+        len(native_tokens[native[0]]) < _MIN_MIXED_SCRIPT_WORDS
+        or len(latin_tokens) < _MIN_MIXED_SCRIPT_WORDS
+    ):
         # This is a structural minimum, not a model-confidence threshold.
-        if (
-            len(native_tokens[native[0]]) < _MIN_MIXED_SCRIPT_WORDS
-            or len(latin_tokens) < _MIN_MIXED_SCRIPT_WORDS
-        ):
-            return _uncertain(
-                "insufficient_mixed_language_evidence",
-                evidence_languages=native,
-            )
+        return _uncertain(
+            "insufficient_mixed_language_evidence",
+            evidence_languages=native,
+        )
 
     if language_identifier is None:
         reason: DetectionReason = (
@@ -258,8 +256,21 @@ def detect_language(
             label=None, status="detector_error", reason="model_error",
             evidence_languages=native,
         )
+    except Exception:  # noqa: BLE001 - identifier boundary must be contained
+        return LanguageDetectionResult(
+            label=None, status="detector_error", reason="model_error",
+            evidence_languages=native,
+        )
 
-    identification = _validate_identification(identification)
+    try:
+        identification = _validate_identification(identification)
+    except (TypeError, ValueError):
+        return LanguageDetectionResult(
+            label=None,
+            status="detector_error",
+            reason="model_error",
+            evidence_languages=native,
+        )
 
     model_label = identification.label
     if model_label == "unsupported":
@@ -306,10 +317,17 @@ def detect_language(
                     label=None, status="detector_error", reason="model_error",
                     evidence_languages=native,
                 )
+            except Exception:  # noqa: BLE001 - identifier boundary must be contained
+                return LanguageDetectionResult(
+                    label=None,
+                    status="detector_error",
+                    reason="model_error",
+                    evidence_languages=native,
+                )
             if any(item.label == "en" for item in latin_identifications):
                 return _identification_result(
                     "mixed", "mixed_language_evidence", identification,
-                    evidence_languages=tuple((*native, "en")),
+                    evidence_languages=(*native, "en"),
                 )
             return _uncertain(
                 "language_evidence_conflict",

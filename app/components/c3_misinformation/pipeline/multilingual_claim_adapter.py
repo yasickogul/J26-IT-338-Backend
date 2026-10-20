@@ -2,21 +2,13 @@
 from __future__ import annotations
 
 import asyncio
-import os
 import threading
 
-from .claim_translation import TranslationProvider, TranslationProviderError, translate_claim
-from .language_detection import LanguageIdentifier, detect_language
+from ..config import language_detection_enabled
 from ..prompts.rag_prompt import ClaimInput, Input
-
-
-def _language_detection_enabled() -> bool:
-    value = os.getenv("COMPNET_LANGUAGE_DETECTION_ENABLED", "false").strip().casefold()
-    if value in {"1", "true", "yes", "on"}:
-        return True
-    if value in {"0", "false", "no", "off", ""}:
-        return False
-    raise RuntimeError("COMPNET_LANGUAGE_DETECTION_ENABLED must be a boolean value.")
+from .claim_translation import TranslationProvider, translate_claim
+from .fasttext_language_identifier import get_fasttext_language_identifier
+from .language_detection import LanguageIdentifier, detect_language
 
 
 class MultilingualClaimAdapter:
@@ -30,10 +22,14 @@ class MultilingualClaimAdapter:
         detection_enabled: bool | None = None,
     ) -> None:
         if detection_enabled is None:
-            detection_enabled = _language_detection_enabled()
+            detection_enabled = language_detection_enabled()
         if not isinstance(detection_enabled, bool):
             raise TypeError("detection_enabled must be a boolean or None")
-        self._language_identifier = language_identifier
+        self._language_identifier = (
+            language_identifier
+            if language_identifier is not None or not detection_enabled
+            else get_fasttext_language_identifier()
+        )
         self._translation_provider = translation_provider
         self._detection_enabled = detection_enabled
 
@@ -58,7 +54,7 @@ class MultilingualClaimAdapter:
                     detected_language,
                     provider=self._translation_provider,
                 )
-            except Exception:
+            except Exception:  # noqa: BLE001 - optional translation safely falls back
                 # Fallback belongs at this integration boundary. Exception
                 # excludes asyncio cancellation; untranslated retrieval does
                 # not guarantee equivalent coverage of the English corpus.
@@ -92,7 +88,7 @@ class MultilingualClaimAdapter:
             nonlocal value, error
             try:
                 value = self.prepare_input(input_data)
-            except BaseException as exc:
+            except BaseException as exc:  # noqa: BLE001 - transfer thread outcome
                 error = exc
             finally:
                 finished.set()
@@ -101,11 +97,8 @@ class MultilingualClaimAdapter:
             target=run, name="c3-multilingual-adapter", daemon=True,
         )
         thread.start()
-        try:
-            while not finished.is_set():
-                await asyncio.sleep(0.01)
-        except asyncio.CancelledError:
-            raise
+        while not finished.is_set():
+            await asyncio.sleep(0.01)
         thread.join(timeout=0.1)
         if error is not None:
             raise error
@@ -117,7 +110,7 @@ class MultilingualClaimAdapter:
             return None
         try:
             result = detect_language(text, language_identifier=self._language_identifier)
-        except Exception:
+        except Exception:  # noqa: BLE001 - optional adapter safely falls back
             return None
         if result.status == "detected" and result.label in {"en", "si", "ta", "mixed"}:
             return result.label

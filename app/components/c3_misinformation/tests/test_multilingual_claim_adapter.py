@@ -1,9 +1,10 @@
 """Offline checks for multilingual claim adaptation at the RAG boundary."""
 
 import asyncio
-import unittest
 import threading
+import unittest
 from types import SimpleNamespace
+from unittest.mock import patch
 
 from app.components.c3_misinformation.pipeline.claim_translation import (
     TranslationProviderError,
@@ -29,6 +30,17 @@ class MockTranslationProvider:
 
 
 class MultilingualClaimAdapterTests(unittest.TestCase):
+    def test_enabled_default_reuses_shared_lazy_identifier(self):
+        identifier = SimpleNamespace()
+        with patch(
+            "app.components.c3_misinformation.pipeline.multilingual_claim_adapter."
+            "get_fasttext_language_identifier",
+            return_value=identifier,
+        ) as factory:
+            adapter = MultilingualClaimAdapter(detection_enabled=True)
+        self.assertIs(adapter._language_identifier, identifier)
+        factory.assert_called_once_with()
+
     def test_english_claim_keeps_original_retrieval_text(self):
         provider = MockTranslationProvider(
             response=TranslationProviderResponse("Should not be used", "mock:english"),
@@ -177,7 +189,8 @@ class MultilingualRagServiceIntegrationTests(unittest.TestCase):
             )
 
             class FakeProvider:
-                calls = []
+                def __init__(self):
+                    self.calls = []
 
                 async def generate_json(self, prompt, schema):
                     self.calls.append((prompt, schema))
@@ -207,7 +220,9 @@ class MultilingualRagServiceIntegrationTests(unittest.TestCase):
                     "legal_coverage": {},
                 }
 
-            from app.components.c3_misinformation.rag_service_async import AsyncRagService
+            from app.components.c3_misinformation.rag_service_async import (
+                AsyncRagService,
+            )
 
             rag = AsyncRagService(
                 evidence_packet_builder=evidence_packet_builder,

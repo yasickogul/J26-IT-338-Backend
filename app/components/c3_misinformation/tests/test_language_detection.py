@@ -1,8 +1,8 @@
 """Offline behavior checks for conservative language detection."""
 
+import unittest
 from dataclasses import asdict
 from types import SimpleNamespace
-import unittest
 
 from app.components.c3_misinformation.pipeline.language_detection import (
     LanguageIdentification,
@@ -82,18 +82,36 @@ class LanguageDetectionTests(unittest.TestCase):
             (LanguageIdentifierError(), "detector_error", "model_error"),
         ):
             with self.subTest(error=error):
-                def fail(text):
-                    raise error
+                def fail(text, failure=error):
+                    raise failure
                 result = detect_language("English words", language_identifier=SimpleNamespace(identify=fail))
                 self.assertEqual((result.status, result.reason), (status, reason))
-        for bad_result, error in (
-            ("en", TypeError),
-            (LanguageIdentification("wrong", "model"), ValueError),
-            (LanguageIdentification("en", " "), ValueError),
-            (LanguageIdentification("en", "model", float("nan")), ValueError),
+        for bad_result in (
+            "en",
+            LanguageIdentification("wrong", "model"),
+            LanguageIdentification("en", " "),
+            LanguageIdentification("en", "model", float("nan")),
         ):
-            with self.subTest(bad_result=bad_result), self.assertRaises(error):
-                detect_language("English words", language_identifier=SimpleNamespace(identify=lambda text: bad_result))
+            with self.subTest(bad_result=bad_result):
+                result = detect_language(
+                    "English words",
+                    language_identifier=SimpleNamespace(
+                        identify=lambda text, response=bad_result: response,
+                    ),
+                )
+                self.assertEqual(
+                    (result.label, result.status, result.reason),
+                    (None, "detector_error", "model_error"),
+                )
+
+        def unexpected_failure(text):
+            raise RuntimeError("private detector detail")
+
+        result = detect_language(
+            "English words",
+            language_identifier=SimpleNamespace(identify=unexpected_failure),
+        )
+        self.assertEqual((result.status, result.reason), ("detector_error", "model_error"))
 
 
 if __name__ == "__main__":

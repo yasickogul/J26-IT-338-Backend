@@ -2,13 +2,14 @@
 
 import os
 import tempfile
-from types import SimpleNamespace
 import unittest
+from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
 from app.components.c3_misinformation.pipeline.fasttext_language_identifier import (
-    FastTextLanguageIdentifier,
     MODEL_PATH_ENV,
+    FastTextLanguageIdentifier,
+    get_fasttext_language_identifier,
 )
 from app.components.c3_misinformation.pipeline.language_detection import (
     LanguageIdentifierError,
@@ -17,6 +18,9 @@ from app.components.c3_misinformation.pipeline.language_detection import (
 
 
 class FastTextAdapterTests(unittest.TestCase):
+    def tearDown(self):
+        get_fasttext_language_identifier.cache_clear()
+
     def test_missing_model_is_lazy_and_unavailable(self):
         with patch.dict(os.environ, {MODEL_PATH_ENV: ""}):
             adapter = FastTextLanguageIdentifier()
@@ -36,6 +40,13 @@ class FastTextAdapterTests(unittest.TestCase):
             self.assertEqual(adapter.identify("More English").score, 0.91)
             loader.assert_called_once_with(file.name)
             model.predict.assert_any_call("English words", k=1)
+
+    def test_process_singleton_is_lazy_and_reused(self):
+        with patch.dict(os.environ, {MODEL_PATH_ENV: ""}):
+            first = get_fasttext_language_identifier()
+            second = get_fasttext_language_identifier()
+        self.assertIs(first, second)
+        self.assertIsNone(first._model)
 
     def test_unsupported_label_and_malformed_predictions(self):
         with tempfile.NamedTemporaryFile() as file:

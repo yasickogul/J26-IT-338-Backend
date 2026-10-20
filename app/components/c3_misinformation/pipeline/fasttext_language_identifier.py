@@ -1,19 +1,18 @@
 """Lazy, local-only adapter for the FastText language-ID model."""
 
-from __future__ import annotations
-
 import math
 import os
+from collections.abc import Callable
+from functools import lru_cache
 from pathlib import Path
 from threading import Lock
-from typing import Any, Callable, Literal
+from typing import Any, Literal
 
 from app.components.c3_misinformation.pipeline.language_detection import (
     LanguageIdentification,
     LanguageIdentifierError,
     LanguageIdentifierUnavailableError,
 )
-
 
 MODEL_PATH_ENV = "COMPNET_FASTTEXT_MODEL_PATH"
 _SUPPORTED_LABELS: dict[str, Literal["en", "si", "ta"]] = {
@@ -126,3 +125,16 @@ class FastTextLanguageIdentifier:
 
         labels, scores = model.predict(model_text, k=1)
         return list(labels), [float(score) for score in scores]
+
+
+@lru_cache(maxsize=1)
+def get_fasttext_language_identifier() -> FastTextLanguageIdentifier:
+    """Return one lazy adapter shared across C3 request and worker workflows."""
+    return FastTextLanguageIdentifier()
+
+
+__all__ = [
+    "MODEL_PATH_ENV",
+    "FastTextLanguageIdentifier",
+    "get_fasttext_language_identifier",
+]
