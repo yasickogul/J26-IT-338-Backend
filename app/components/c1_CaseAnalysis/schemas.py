@@ -155,3 +155,95 @@ class IntakeStatusResponse(BaseModel):
     status: IntakeStatus
     result: ExtractedLegalInfo | None = None
     error: str | None = None
+
+
+# --- Stage 3: semantic retrieval + grounded analysis ---
+
+RETRIEVAL_SCORE_EXPLANATION = (
+    "retrieval_similarity is cosine similarity between the query embedding and the best "
+    "matching judgment chunk. It is not a Legal Precedent Relevance Score and not a "
+    "prediction of litigation success."
+)
+DISCLAIMER_TEXT = "This is informational and not legal advice."
+
+
+class SimilarCasesRequest(BaseModel):
+    query: str = Field(min_length=20, max_length=8000)
+    top_k: int | None = Field(default=None, ge=1, le=20)
+    filter_civil: bool = True
+
+
+class SimilarJudgmentMatch(BaseModel):
+    document_id: str
+    title: str
+    citation: str | None = None
+    court: str | None = None
+    decision_date: str | None = None
+    source_url: str | None = None
+    source_type: str = "judgment"
+    case_type: str | None = None
+    chunk_id: str
+    chunk_index: int
+    section: str | None = None
+    supporting_excerpt: str
+    retrieval_similarity: float = Field(
+        description="Cosine similarity from pgvector (1 - distance). Not a legal success probability.",
+    )
+    score_label: str = "retrieval_similarity_cosine"
+
+
+class SimilarCasesResponse(BaseModel):
+    query: str
+    retrieved_count: int
+    cases: list[SimilarJudgmentMatch] = Field(default_factory=list)
+    retrieval_method: str = "semantic_pgvector_cosine"
+    # Literal defaults avoid NameError if this module is partially reloaded.
+    score_explanation: str = (
+        "retrieval_similarity is cosine similarity between the query embedding and the best "
+        "matching judgment chunk. It is not a Legal Precedent Relevance Score and not a "
+        "prediction of litigation success."
+    )
+    disclaimer: str = "This is informational and not legal advice."
+    intake_id: str | None = None
+
+
+class IntakeSimilarCasesRequest(BaseModel):
+    top_k: int | None = Field(default=None, ge=1, le=20)
+    filter_civil: bool = True
+    include_analysis: bool = True
+    use_llm: bool = False
+
+
+class CaseAnalysisSection(BaseModel):
+    title: str
+    content: str
+    source_document_ids: list[str] = Field(default_factory=list)
+
+
+class GroundedCaseAnalysis(BaseModel):
+    case_summary: str
+    similar_historical_cases: list[CaseAnalysisSection] = Field(default_factory=list)
+    legal_issues: list[str] = Field(default_factory=list)
+    applicable_legal_principles: list[CaseAnalysisSection] = Field(default_factory=list)
+    arguments_for_applicant: list[str] = Field(default_factory=list)
+    arguments_for_respondent: list[str] = Field(default_factory=list)
+    evidence_gaps: list[str] = Field(default_factory=list)
+    limitations: list[str] = Field(default_factory=list)
+    llm_used: bool = False
+    llm_status: str = "not_requested"
+    model_version: str
+
+
+class IntakeSimilarCasesResponse(BaseModel):
+    intake_id: str
+    query: str
+    retrieved_count: int
+    cases: list[SimilarJudgmentMatch] = Field(default_factory=list)
+    analysis: GroundedCaseAnalysis | None = None
+    retrieval_method: str = "semantic_pgvector_cosine"
+    score_explanation: str = (
+        "retrieval_similarity is cosine similarity between the query embedding and the best "
+        "matching judgment chunk. It is not a Legal Precedent Relevance Score and not a "
+        "prediction of litigation success."
+    )
+    disclaimer: str = "This is informational and not legal advice."
