@@ -23,7 +23,12 @@ DISPUTE_CATEGORY_LABELS: dict[str, str] = {
 
 OCR_MIN_CHARS = 200
 MODEL_VERSION = "stage2-rules-v1"
+ANALYSIS_MODEL_VERSION = "stage3-semantic-v1"
 DISCLAIMER = "This is informational and not legal advice."
+RETRIEVAL_DISCLAIMER = (
+    "Retrieval similarity measures semantic closeness in the judgment corpus. "
+    "It is not a legal relevance percentage, binding-authority score, or prediction of case outcome."
+)
 
 
 class C1Settings(BaseSettings):
@@ -31,6 +36,13 @@ class C1Settings(BaseSettings):
 
     storage_subdir: str = "c1_case_analysis"
     ocr_min_chars: int = OCR_MIN_CHARS
+    retrieval_top_k_default: int = 5
+    retrieval_top_k_max: int = 20
+    # Optional C1-owned LM Studio OpenAI-compatible endpoint (does not change app.core.llm).
+    lm_studio_base_url: str = "http://localhost:1234/v1"
+    lm_studio_model: str = ""
+    lm_studio_timeout_seconds: float = 45.0
+    lm_studio_enabled: bool = False
 
 
 c1_settings = C1Settings()

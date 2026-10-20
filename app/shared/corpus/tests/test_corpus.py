@@ -1,178 +1,150 @@
-"""Offline models, frozen migration DDL, and artifact importer tests."""
-import ast
-import hashlib
-import json
-from pathlib import Path
-import tempfile
-import unittest
-from unittest.mock import MagicMock, AsyncMock
-import numpy as np
-from sqlalchemy.schema import CreateTable, CreateIndex
-from sqlalchemy.dialects.postgresql import dialect
-from app.shared.corpus.models import Base, LegalDocument, LegalChunk
-from app.shared.corpus.ingest import validate_artifacts, import_artifacts
+"""Offline contract checks for the shared MiniLM legal corpus.
+
+C3's separate LaBSE/768-dimensional artifact validation and migration tests
+live in app.components.c3_misinformation.tests. Shared corpus tests must not
+expect C3-specific source IDs or embeddings in shared.legal_chunks.
+"""
+
+from __future__ import annotations
+
+import uuid
+from datetime import date
+from unittest.mock import AsyncMock, MagicMock, patch
+
+import pytest
+from sqlalchemy.dialects.postgresql import JSONB
+from pgvector.sqlalchemy import Vector
+
+from app.core.config import settings
+from app.shared.corpus.ingest import (
+    citation_exists,
+    insert_judgment,
+    parse_decision_date,
+)
+from app.shared.corpus.models import LegalChunk, LegalDocument, SharedBase
+from app.shared.corpus.schema import CORPUS_DDL, EMBEDDING_INDEX_DDL
 
 
-class SchemaTests(unittest.TestCase):
-    def test_uuid_and_textual_identity_and_vector_type(self):
-        table = LegalChunk.__table__
-        self.assertEqual(table.schema, "shared")
-        self.assertEqual(str(table.c.id.type), "UUID")
-        self.assertEqual(str(table.c.chunk_id.type), "TEXT")
-        self.assertTrue(table.c.chunk_id.unique)
-        self.assertFalse(table.c.original_chunk_id.nullable)
-        self.assertEqual(str(table.c.embedding.type), "VECTOR(768)")
-        self.assertTrue(table.c.parent_context.nullable)
-        self.assertTrue(table.c.paragraph.nullable)
-        self.assertEqual(next(iter(table.c.document_id.foreign_keys)).target_fullname,
-                         "shared.legal_documents.id")
-
-    def test_frozen_migration_matches_orm_and_safe_downgrade(self):
-        path = Path("app/shared/migrations/versions/shared_0001_corpus.py")
-        tree = ast.parse(path.read_text())
-        statements = next(ast.literal_eval(n.value) for n in tree.body
-                          if isinstance(n, ast.Assign) and n.targets[0].id == "STATEMENTS")
-        expected = []
-        for table in Base.metadata.sorted_tables:
-            expected.append(str(CreateTable(table).compile(dialect=dialect())))
-            expected.extend(str(CreateIndex(i).compile(dialect=dialect()))
-                            for i in sorted(table.indexes, key=lambda i: i.name))
-        self.assertEqual(statements, expected)
-        # Execute actual revision functions with only an inert Alembic op.
-        namespace = {}
-        imports_removed = [n for n in tree.body if not isinstance(n, ast.ImportFrom)]
-        op = MagicMock()
-        namespace["op"] = op
-        exec(compile(ast.Module(imports_removed, []), str(path), "exec"), namespace)
-        namespace["upgrade"]()
-        calls = [c.args[0] for c in op.execute.call_args_list]
-        self.assertIn("pg_extension", calls[0])
-        self.assertIn("Existing corpus objects", calls[0])
-        self.assertEqual(calls[2:], statements)
-        op.reset_mock()
-        namespace["downgrade"]()
-        calls = [c.args[0] for c in op.execute.call_args_list]
-        self.assertIn("ACCESS EXCLUSIVE", calls[0])
-        self.assertIn("Refusing to drop nonempty", calls[1])
-        self.assertEqual(calls[-2:], ["DROP TABLE shared.legal_chunks", "DROP TABLE shared.legal_documents"])
-        self.assertFalse(any("DROP SCHEMA" in c or "DROP EXTENSION" in c for c in calls))
+def test_shared_orm_owns_its_tables_without_mixing_component_metadata():
+    assert LegalDocument.metadata is SharedBase.metadata
+    assert LegalChunk.metadata is SharedBase.metadata
+    assert {table.fullname for table in SharedBase.metadata.tables.values()} == {
+        "shared.legal_documents",
+        "shared.legal_chunks",
+    }
+    assert LegalDocument.__table__.schema == "shared"
+    assert LegalChunk.__table__.schema == "shared"
 
 
-class ImportTests(unittest.IsolatedAsyncioTestCase):
-    def setUp(self):
-        self.directory = tempfile.TemporaryDirectory()
-        self.addCleanup(self.directory.cleanup)
-        root = Path(self.directory.name)
-        self.paths = {name + "_path": root / name for name in ("manifest", "input", "corpus", "vector")}
-        self.chunk = dict(chunk_id="c1", text="Complete original தமிழ் passage",
-                          metadata=dict(source_id="s1", title="Act", section_label="Part > Section",
-                                        language="English", legal_domain="Civil",
-                                        document_type="act", source_file="act.pdf", act_number="1"))
-        self.corpus = [self.chunk]
-        self.inputs = [dict(self.chunk, embedding_text=self.chunk["text"])]
-        self.vectors = np.eye(1, 768, dtype=np.float32)
-        self.save()
+def test_shared_legal_document_columns_and_chunk_relationship():
+    documents = LegalDocument.__table__
+    chunks = LegalChunk.__table__
+    assert {"id", "source_type", "title", "citation", "full_text", "metadata"}.issubset(
+        documents.c.keys()
+    )
+    assert {"id", "document_id", "chunk_index", "text", "embedding", "metadata"}.issubset(
+        chunks.c.keys()
+    )
+    assert isinstance(documents.c.metadata.type, JSONB)
+    assert isinstance(chunks.c.metadata.type, JSONB)
+    assert next(iter(chunks.c.document_id.foreign_keys)).target_fullname == (
+        "shared.legal_documents.id"
+    )
+    assert next(iter(chunks.c.document_id.foreign_keys)).ondelete == "CASCADE"
 
-    def save(self):
-        self.paths["corpus_path"].write_text(json.dumps(self.corpus))
-        self.paths["input_path"].write_text(json.dumps(dict(
-            inputs=self.inputs, model_name="sentence-transformers/LaBSE",
-            dimension=768, derived_input_count=len(self.inputs))))
-        self.manifest = dict(model_name="sentence-transformers/LaBSE", dimension=768,
-                             count=len(self.inputs),
-                             input_file_sha256=hashlib.sha256(self.paths["input_path"].read_bytes()).hexdigest(),
-                             original_corpus_sha256=hashlib.sha256(self.paths["corpus_path"].read_bytes()).hexdigest())
-        self.paths["manifest_path"].write_text(json.dumps(self.manifest))
-        with self.paths["vector_path"].open("wb") as stream:
-            np.savez(stream, embeddings=self.vectors,
-                     chunk_ids=np.array([x["chunk_id"] for x in self.inputs]))
 
-    def session(self, count=0):
-        session = MagicMock()
-        session.in_transaction.return_value = False
-        result = MagicMock()
-        result.scalar_one.return_value = count
-        session.execute = AsyncMock(return_value=result)
-        session.begin.return_value.__aexit__.return_value = False
-        return session
+def test_shared_embedding_uses_its_own_configured_dimension():
+    embedding = LegalChunk.__table__.c.embedding
+    assert isinstance(embedding.type, Vector)
+    assert embedding.type.dim == settings.embedding_dim
+    assert embedding.nullable  # Documents can be ingested before embedding.
+    assert "VECTOR(384)" in CORPUS_DDL
+    assert "VECTOR(768)" not in CORPUS_DDL
+    assert "USING hnsw" in EMBEDDING_INDEX_DDL
 
-    async def test_validation_preserves_content_and_summary(self):
-        docs, rows, summary = validate_artifacts(**self.paths)
-        self.assertEqual(summary["chunks"], 1)
-        self.assertTrue(summary["dry_run"])
-        self.assertEqual(docs[0]["source_id"], "s1")
-        self.assertEqual(rows[0]["legal_text"], self.chunk["text"])
-        self.assertEqual(rows[0]["original_chunk_id"], "c1")
-        self.assertEqual(json.loads(rows[0]["metadata"]), self.chunk["metadata"])
 
-    async def test_hash_and_model_rejection(self):
-        for key, value in (("model_name", "other"), ("dimension", 384),
-                           ("input_file_sha256", "bad"), ("original_corpus_sha256", "bad")):
-            self.paths["manifest_path"].write_text(json.dumps(dict(self.manifest, **{key: value})))
-            with self.assertRaises(ValueError):
-                validate_artifacts(**self.paths)
+def test_shared_ddl_retains_keyword_index_and_judgment_provenance():
+    assert "CREATE TABLE IF NOT EXISTS shared.legal_documents" in CORPUS_DDL
+    assert "CREATE TABLE IF NOT EXISTS shared.legal_chunks" in CORPUS_DDL
+    assert "GENERATED ALWAYS AS" in CORPUS_DDL
+    assert "USING GIN (tsv)" in CORPUS_DDL
+    assert "ON DELETE CASCADE" in CORPUS_DDL
+    assert "legal_documents_citation_uidx" in CORPUS_DDL
 
-    async def test_wrong_vectors(self):
-        for vector in (np.zeros((1, 768), dtype=np.float32),
-                       np.full((1, 768), np.nan, dtype=np.float32),
-                       np.eye(1, 767, dtype=np.float32),
-                       np.eye(1, 768, dtype=np.float64)):
-            self.vectors = vector
-            self.save()
-            with self.assertRaises(ValueError):
-                validate_artifacts(**self.paths)
 
-    async def test_duplicate_and_changed_text_rejected(self):
-        self.inputs.append(self.inputs[0])
-        self.save()
-        with self.assertRaises(ValueError):
-            validate_artifacts(**self.paths)
-        self.inputs = [dict(self.inputs[0], text="changed")]
-        self.save()
-        with self.assertRaises(ValueError):
-            validate_artifacts(**self.paths)
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [
+        ("2026-10-20", date(2026, 10, 20)),
+        ("20/10/2026", date(2026, 10, 20)),
+        ("20-10-2026", date(2026, 10, 20)),
+        ("2026/10/20", date(2026, 10, 20)),
+        ("not a date", None),
+        ("", None),
+        (None, None),
+    ],
+)
+def test_parse_decision_date(value, expected):
+    assert parse_decision_date(value) == expected
 
-    async def test_missing_metadata_and_original_provenance_rejected(self):
-        self.inputs = [dict(self.chunk, original_chunk_id="invented", embedding_text=self.chunk["text"])]
-        self.save()
-        with self.assertRaises(ValueError):
-            validate_artifacts(**self.paths)
-        self.inputs = [dict(self.chunk, embedding_text=self.chunk["text"])]
-        del self.chunk["metadata"]["source_id"]
-        self.save()
-        with self.assertRaises(ValueError):
-            validate_artifacts(**self.paths)
 
-    async def test_transaction_intent_and_no_upsert(self):
-        session = self.session()
-        summary = await import_artifacts(session=session, **self.paths)
-        self.assertFalse(summary["dry_run"])
-        session.begin.assert_called_once()
-        session.begin.return_value.__aexit__.assert_awaited_once()
-        sql = " ".join(str(c.args[0]) for c in session.execute.await_args_list)
-        self.assertIn("LOCK TABLE", sql)
-        self.assertIn("CAST(:embedding AS vector)", sql)
-        self.assertNotIn("ON CONFLICT", sql)
-        self.assertNotIn("UPDATE", sql)
-        session.close.assert_not_called()
+@pytest.mark.asyncio
+async def test_citation_exists_uses_shared_documents():
+    session = MagicMock()
+    found = MagicMock()
+    found.scalar_one_or_none.return_value = uuid.uuid4()
+    session.execute = AsyncMock(return_value=found)
+    assert await citation_exists(session, "CA/2026/1") is True
+    statement = session.execute.await_args.args[0]
+    assert "shared.legal_documents" in str(statement)
+    assert "citation" in str(statement)
 
-    async def test_existing_data_and_active_transaction_refused(self):
-        session = self.session(1)
-        with self.assertRaises(ValueError):
-            await import_artifacts(session=session, **self.paths)
-        self.assertEqual(session.execute.await_count, 2)
-        session = self.session()
-        session.in_transaction.return_value = True
-        with self.assertRaises(ValueError):
-            await import_artifacts(session=session, **self.paths)
-        session.execute.assert_not_awaited()
+    found.scalar_one_or_none.return_value = None
+    assert await citation_exists(session, "unseen") is False
 
-    async def test_insert_failure_exits_transaction_for_rollback(self):
-        session = self.session()
-        result = MagicMock()
-        result.scalar_one.return_value = 0
-        error = RuntimeError("insert failed")
-        session.execute.side_effect = [result, result, result, error]
-        with self.assertRaises(RuntimeError):
-            await import_artifacts(session=session, **self.paths)
-        self.assertIs(session.begin.return_value.__aexit__.call_args.args[0], RuntimeError)
+
+@pytest.mark.asyncio
+async def test_insert_judgment_preserves_metadata_and_chunks_without_embeddings():
+    session = MagicMock()
+    session.add = MagicMock()
+    identity = uuid.uuid4()
+
+    async def flush_document():
+        session.add.call_args_list[0].args[0].id = identity
+
+    session.flush = AsyncMock(side_effect=flush_document)
+    with patch(
+        "app.shared.corpus.ingest.chunk_text",
+        return_value=["First passage", "Second passage"],
+    ) as chunker:
+        document, count = await insert_judgment(
+            session,
+            title="Synthetic judgment",
+            citation="CA/TEST/2026",
+            court="Court of Appeal",
+            case_type="civil",
+            decision_date=date(2026, 10, 20),
+            source_url="https://example.test/judgment",
+            full_text="Synthetic case facts",
+            metadata={"synthetic": True},
+        )
+
+    assert count == 2
+    assert document.id == identity
+    assert document.title == "Synthetic judgment"
+    assert document.metadata_ == {"synthetic": True}
+    assert document.source_type == "judgment"
+    assert document.language == "en"
+    assert session.add.call_count == 3
+    session.flush.assert_awaited_once()
+    chunker.assert_called_once_with(
+        "Synthetic case facts", target_tokens=400, overlap_ratio=0.15
+    )
+    for index, call in enumerate(session.add.call_args_list[1:]):
+        chunk = call.args[0]
+        assert isinstance(chunk, LegalChunk)
+        assert chunk.document_id == identity
+        assert chunk.chunk_index == index
+        assert chunk.embedding is None
+        assert chunk.metadata_ == {}
+        assert chunk.text in {"First passage", "Second passage"}

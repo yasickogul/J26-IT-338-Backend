@@ -210,6 +210,11 @@ def extract_legal_info(
         district=_norm(intake.district),
         amount_lkr=_norm(intake.amount_lkr),
         relevant_dates=_norm(intake.relevant_dates),
+        case_stage=_norm(intake.case_stage),
+        case_stage_label=_norm(intake.case_stage_label),
+        subcategory=_norm(intake.subcategory),
+        subcategory_label=_norm(intake.subcategory_label),
+        other_category_description=_norm(intake.other_category_description),
     )
 
     structured = StructuredLegalInfo(
@@ -251,6 +256,12 @@ def intake_to_source_text(intake: CaseIntakeRequest, document_text: str = "") ->
 
     label = DISPUTE_CATEGORY_LABELS.get(intake.dispute_category, intake.dispute_category)
     blocks.append(f"Dispute category: {label}")
+    if intake.subcategory_label or intake.subcategory:
+        blocks.append(
+            f"Dispute subcategory: {intake.subcategory_label or intake.subcategory}"
+        )
+    if intake.other_category_description:
+        blocks.append(f"Other category note: {intake.other_category_description}")
     if intake.title:
         blocks.append(f"Case title: {intake.title}")
     if intake.case_number:
@@ -267,6 +278,8 @@ def intake_to_source_text(intake: CaseIntakeRequest, document_text: str = "") ->
         blocks.append(f"Dispute amount (LKR): {intake.amount_lkr}")
     if intake.relevant_dates:
         blocks.append(f"Relevant dates: {intake.relevant_dates}")
+    if intake.case_stage_label or intake.case_stage:
+        blocks.append(f"Case stage: {intake.case_stage_label or intake.case_stage}")
     if intake.legal_issue:
         blocks.append(f"Legal issue: {intake.legal_issue}")
     if intake.remedy:

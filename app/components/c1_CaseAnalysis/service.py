@@ -1,10 +1,11 @@
-"""Stage 2 orchestration: intake → document process → legal info extraction."""
+"""C1 orchestration: Stage 2 intake/extraction + Stage 3 semantic retrieval/analysis."""
 
 from __future__ import annotations
 
 import uuid
 from pathlib import Path
 
+from app.components.c1_CaseAnalysis.analysis.grounded import build_grounded_analysis
 from app.components.c1_CaseAnalysis.config import MODEL_VERSION, c1_settings
 from app.components.c1_CaseAnalysis.pipeline.document_processor import (
     process_document_text,
@@ -21,22 +22,42 @@ from app.components.c1_CaseAnalysis.repository import (
     mark_failed,
     save_extraction,
 )
+from app.components.c1_CaseAnalysis.retrieval.query_builder import (
+    build_retrieval_query_from_extraction,
+    build_retrieval_query_from_intake,
+)
+from app.components.c1_CaseAnalysis.retrieval.semantic import SemanticRetriever
 from app.components.c1_CaseAnalysis.schemas import (
     CaseIntakeRequest,
     ExtractedLegalInfo,
     ExtractTextRequest,
+    IntakeSimilarCasesRequest,
+    IntakeSimilarCasesResponse,
     IntakeStatusResponse,
+    SimilarCasesRequest,
+    SimilarCasesResponse,
 )
 from app.core.config import settings
-from app.core.database import DirectSessionLocal, direct_engine
+from app.core.database import DirectSessionLocal, SessionLocal, direct_engine, engine
 from app.shared.contracts.legal_info import StructuredLegalInfo
 
 
 class Stage2Service:
+    def __init__(self) -> None:
+        self.retriever = SemanticRetriever()
+
     async def ensure_ready(self) -> None:
         if direct_engine is None:
             raise RuntimeError("DATABASE_URL / DATABASE_URL_DIRECT is not configured")
         await ensure_c1_schema(direct_engine)
+
+    def _retrieval_session_factory(self):
+        """Prefer pooled SessionLocal for read-only corpus search; fall back to direct."""
+        if SessionLocal is not None:
+            return SessionLocal
+        if DirectSessionLocal is not None:
+            return DirectSessionLocal
+        raise RuntimeError("DATABASE_URL is not configured")
 
     async def process_intake(
         self,
@@ -86,6 +107,10 @@ class Stage2Service:
                     intake=intake,
                     processed_text=processed["text"],
                 )
+                # Stage 2 response remains extraction-only; retrieval is a separate call.
+                result.similar_cases_available = False
+                result.legal_relevance_score_available = False
+                result.llm_explanation_available = False
                 await save_extraction(
                     session,
                     intake=row,
@@ -134,6 +159,92 @@ class Stage2Service:
                 error=row.error,
             )
 
+    async def search_similar_cases(self, body: SimilarCasesRequest) -> SimilarCasesResponse:
+        if engine is None and direct_engine is None:
+            raise RuntimeError("DATABASE_URL is not configured")
+        factory = self._retrieval_session_factory()
+        async with factory() as session:
+            matches = await self.retriever.search(
+                session,
+                body.query,
+                top_k=body.top_k,
+                filter_civil=body.filter_civil,
+            )
+        return SimilarCasesResponse(
+            query=body.query,
+            retrieved_count=len(matches),
+            cases=matches,
+        )
+
+    async def search_similar_cases_for_intake(
+        self,
+        intake_id: str,
+        body: IntakeSimilarCasesRequest | None = None,
+    ) -> IntakeSimilarCasesResponse:
+        request = body or IntakeSimilarCasesRequest()
+        try:
+            intake_uuid = uuid.UUID(intake_id)
+        except ValueError as exc:
+            raise ValueError("INVALID_INTAKE_ID") from exc
+
+        await self.ensure_ready()
+        assert DirectSessionLocal is not None
+
+        async with DirectSessionLocal() as session:
+            row = await get_intake(session, intake_uuid)
+            if row is None:
+                raise ValueError("INTAKE_NOT_FOUND")
+            if row.status != "done" or not row.extraction or not row.extraction.structured_json:
+                raise ValueError("INTAKE_EXTRACTION_INCOMPLETE")
+
+            extracted = ExtractedLegalInfo.model_validate(row.extraction.structured_json)
+            intake_json = row.intake_json or {}
+            try:
+                query = build_retrieval_query_from_extraction(
+                    extracted,
+                    intake_json=intake_json,
+                )
+            except ValueError:
+                # Fall back to raw intake fields if extraction summary is thin.
+                try:
+                    fallback_payload = dict(intake_json)
+                    fallback_payload["dispute_category"] = (
+                        intake_json.get("dispute_category")
+                        or extracted.case_information.dispute_category
+                        or "other_civil"
+                    )
+                    query = build_retrieval_query_from_intake(
+                        CaseIntakeRequest.model_validate(fallback_payload)
+                    )
+                except Exception as exc:
+                    raise ValueError("RETRIEVAL_QUERY_EMPTY") from exc
+
+        factory = self._retrieval_session_factory()
+        async with factory() as session:
+            matches = await self.retriever.search(
+                session,
+                query,
+                top_k=request.top_k,
+                filter_civil=request.filter_civil,
+            )
+
+        analysis = None
+        if request.include_analysis:
+            analysis = await build_grounded_analysis(
+                extracted=extracted,
+                matches=matches,
+                intake_json=intake_json,
+                use_llm=request.use_llm and c1_settings.lm_studio_enabled,
+            )
+
+        return IntakeSimilarCasesResponse(
+            intake_id=intake_id,
+            query=query,
+            retrieved_count=len(matches),
+            cases=matches,
+            analysis=analysis,
+        )
+
     def store_upload(self, filename: str, data: bytes) -> Path:
         root = Path(settings.file_storage_path) / c1_settings.storage_subdir
         root.mkdir(parents=True, exist_ok=True)
@@ -144,3 +255,4 @@ class Stage2Service:
 
 
 stage2_service = Stage2Service()
+c1_service = stage2_service

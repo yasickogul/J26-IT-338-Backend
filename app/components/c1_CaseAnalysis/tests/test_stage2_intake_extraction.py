@@ -67,9 +67,62 @@ def test_extract_legal_info_structured_fields():
     assert "Written agreement available" in result.evidence_mentioned
     assert "CA/WRT/0201/2022" in result.cited_case_references
     assert result.structured_legal_info.case_type == "Employment"
+    assert result.similar_cases_available is False
+    assert result.legal_relevance_score_available is False
+    assert result.llm_explanation_available is False
     payload = result.model_dump()
-    assert "similar_cases" not in payload
+    assert "similar_cases" not in payload or payload.get("similar_cases") in (None, [], False)
     assert "relevant_laws_and_precedents" not in payload
+
+
+def test_structured_evidence_items_derive_factors_and_stage_fields():
+    intake = CaseIntakeRequest(
+        dispute_category="contract",
+        title="Silva v. Fernando Traders",
+        plaintiff="Nimal Silva",
+        defendant="Fernando Traders",
+        case_stage="not_filed",
+        case_stage_label="Not yet filed",
+        subcategory="non_payment",
+        subcategory_label="Non-payment / debt recovery",
+        description=(
+            "A supplier delivered construction materials under a written agreement. "
+            "The customer failed to pay the agreed amount despite several reminders."
+        ),
+        legal_issue="Breach of contract involving non-payment",
+        remedy="Recovery of outstanding payment",
+        evidence_items=[
+            {
+                "id": "written_agreement",
+                "label": "Written agreement",
+                "availability": "available",
+                "description": "Signed supply agreement",
+            },
+            {
+                "id": "invoices",
+                "label": "Invoices",
+                "availability": "available",
+                "description": "Outstanding invoices",
+            },
+            {
+                "id": "payment_receipts",
+                "label": "Payment receipts",
+                "availability": "not_available",
+            },
+        ],
+    )
+    assert any("Written agreement" in factor for factor in intake.evidence_factors)
+    merged = intake_to_source_text(intake)
+    assert "Case stage: Not yet filed" in merged
+    assert "Dispute subcategory: Non-payment / debt recovery" in merged
+    result = extract_legal_info(
+        intake_id="00000000-0000-0000-0000-000000000077",
+        intake=intake,
+        processed_text=merged,
+    )
+    assert result.case_information.case_stage == "not_filed"
+    assert result.case_information.subcategory_label == "Non-payment / debt recovery"
+    assert any("Written agreement" in item for item in result.evidence_mentioned)
 
 
 def test_historical_citation_not_used_as_current_case_number():
@@ -119,12 +172,14 @@ def test_explicit_case_number_preserved_separately_from_cites():
     assert "CA/PHC/0004/2021" != result.case_information.case_number
 
 
-def test_ping_reports_stage2():
+def test_ping_reports_stage3_capabilities():
     client = TestClient(app)
     r = client.get("/api/v1/c1/ping")
     assert r.status_code == 200
     assert r.json()["component"] == "c1"
-    assert r.json()["stage"] == 2
+    assert r.json()["stage"] == 3
+    assert r.json()["capabilities"]["semantic_retrieval"] is True
+    assert r.json()["capabilities"]["hybrid_retrieval"] is False
 
 
 def test_invalid_dispute_category_returns_422():
