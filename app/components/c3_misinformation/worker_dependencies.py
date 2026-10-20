@@ -32,6 +32,25 @@ AsyncSessionFactory = Callable[[], AsyncSession | Awaitable[AsyncSession]]
 _labse_encoder: Any | None = None
 _labse_encoder_lock = Lock()
 
+# Keep the worker's offline lookup aligned with the provisioned Safetensors
+# snapshot.  An unfiltered snapshot_download requires every file in the Hub
+# repository, including alternative PyTorch/ONNX/TF/Flax weights that are not
+# needed by SentenceTransformer and were intentionally not cached.
+LABSE_SNAPSHOT_ALLOW_PATTERNS = (
+    "1_Pooling/config.json",
+    "2_Dense/config.json",
+    "2_Dense/model.safetensors",
+    "config.json",
+    "config_sentence_transformers.json",
+    "model.safetensors",
+    "modules.json",
+    "sentence_bert_config.json",
+    "special_tokens_map.json",
+    "tokenizer.json",
+    "tokenizer_config.json",
+    "vocab.txt",
+)
+
 
 class WorkerDependencyConfigurationError(RuntimeError):
     """The C3 worker cannot be composed from configured runtime dependencies."""
@@ -115,7 +134,11 @@ def _get_cached_labse_encoder() -> Any:
             from huggingface_hub import snapshot_download
             from sentence_transformers import SentenceTransformer
 
-            snapshot = snapshot_download(MODEL_NAME, local_files_only=True)
+            snapshot = snapshot_download(
+                MODEL_NAME,
+                allow_patterns=LABSE_SNAPSHOT_ALLOW_PATTERNS,
+                local_files_only=True,
+            )
             encoder = SentenceTransformer(str(snapshot), device="cpu")
         except Exception as exc:
             raise WorkerDependencyConfigurationError(

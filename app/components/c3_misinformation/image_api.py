@@ -2,14 +2,15 @@
 
 from __future__ import annotations
 
+import asyncio
 import os
+import threading
 from collections.abc import Callable
 from dataclasses import dataclass
 from functools import lru_cache
 from typing import Annotated, Literal
 
 from fastapi import APIRouter, Depends, File, Response, UploadFile
-from starlette.concurrency import run_in_threadpool
 
 from .image_api_schemas import ImageClaimExtractionResponse
 from .image_claim_service import (
@@ -35,6 +36,35 @@ _SUPPORTED_IMAGE_MEDIA_TYPES = {"image/jpeg", "image/png"}
 _DEFAULT_MAX_FILE_BYTES = 10 * 1024 * 1024
 _DEFAULT_MAX_DECODED_PIXELS = 40_000_000
 _DEFAULT_MAX_PROCESSED_PIXELS = 40_000_000
+
+
+async def _run_c3_blocking(callable_: Callable[..., object], *args: object) -> object:
+    """Run one blocking image boundary without the unstable default executor."""
+    asyncio.get_running_loop()
+    value: object = None
+    error: BaseException | None = None
+    finished = threading.Event()
+
+    def complete() -> None:
+        nonlocal value, error
+        try:
+            value = callable_(*args)
+        except BaseException as exc:  # noqa: BLE001 - transfer thread outcome
+            error = exc
+        finally:
+            finished.set()
+
+    thread = threading.Thread(target=complete, name="c3-image-boundary", daemon=True)
+    thread.start()
+    try:
+        while not finished.is_set():
+            await asyncio.sleep(0.01)
+    except asyncio.CancelledError:
+        raise
+    thread.join(timeout=0.1)
+    if error is not None:
+        raise error
+    return value
 
 
 @dataclass(frozen=True)
@@ -84,6 +114,11 @@ def _bounded_env_float(
 
 def get_max_image_bytes() -> int:
     return _positive_env_int("C3_OCR_MAX_IMAGE_BYTES", _DEFAULT_MAX_FILE_BYTES)
+
+
+async def get_max_image_bytes_dependency() -> int:
+    """Async FastAPI dependency that avoids the default executor bridge."""
+    return get_max_image_bytes()
 
 
 def _confidence_threshold() -> float:
@@ -185,6 +220,11 @@ def get_image_claim_extractor() -> ImageClaimExtractor:
     return extractor
 
 
+async def get_image_claim_extractor_dependency() -> ImageClaimExtractor:
+    """Async FastAPI dependency for the cached C3 extractor factory."""
+    return get_image_claim_extractor()
+
+
 @router.post(
     "/claims/extract-image",
     response_model=ImageClaimExtractionResponse,
@@ -194,9 +234,9 @@ async def extract_image_claim(
     response: Response,
     extractor: Annotated[
         ImageClaimExtractor,
-        Depends(get_image_claim_extractor),
+        Depends(get_image_claim_extractor_dependency),
     ],
-    max_image_bytes: Annotated[int, Depends(get_max_image_bytes)],
+    max_image_bytes: Annotated[int, Depends(get_max_image_bytes_dependency)],
 ) -> ImageClaimExtractionResponse:
     """Extract an assertion from an image; do not verify or persist it."""
     response.headers["Cache-Control"] = "no-store"
@@ -223,7 +263,7 @@ async def extract_image_claim(
             ),
         )
     else:
-        result = await run_in_threadpool(extractor, image_bytes)
+        result = await _run_c3_blocking(extractor, image_bytes)
     return ImageClaimExtractionResponse(
         ocr_raw_text=result.ocr_raw_text,
         ocr_status=result.ocr_status,
