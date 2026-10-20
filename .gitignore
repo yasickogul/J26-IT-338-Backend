@@ -2,6 +2,13 @@
 __pycache__/
 *.pyc
 .env
+.env.*
+!.env.example
 data/
 .pytest_cache/
 .ruff_cache/
+.coverage
+htmlcov/
+.tox/
+.mypy_cache/
+data/uploads-test/
