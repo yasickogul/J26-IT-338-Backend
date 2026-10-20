@@ -14,6 +14,7 @@ from .pipeline.claim_extraction import (
 from .pipeline.language_detection import (
     DetectionReason,
     DetectionStatus,
+    LanguageIdentifier,
     LanguageLabel,
     detect_language,
 )
@@ -21,6 +22,7 @@ from .pipeline.ocr_extractor import (
     ImageProcessingConfig,
     ImageProcessingError,
     ImageProcessor,
+    OCRLineConfidence,
     OCRProvider,
     OCRProviderError,
     OCRProviderResult,
@@ -56,6 +58,7 @@ class ImageClaimExtractionResult:
     ocr_method: str | None = None
     claim_extraction_method: str | None = None
     error: SafeExtractionError | None = None
+    ocr_line_confidences: tuple[OCRLineConfidence, ...] = ()
 
 
 def _failed(
@@ -67,6 +70,7 @@ def _failed(
     confidence: float | None = None,
     low_confidence: bool = True,
     ocr_method: str | None = None,
+    line_confidences: tuple[OCRLineConfidence, ...] = (),
 ) -> ImageClaimExtractionResult:
     return ImageClaimExtractionResult(
         ocr_raw_text=raw_text,
@@ -82,7 +86,29 @@ def _failed(
         language_detection_reason=None,
         ocr_method=ocr_method,
         error=error,
+        ocr_line_confidences=line_confidences,
     )
+
+
+def _valid_line_confidences(value: object) -> bool:
+    if not isinstance(value, tuple):
+        return False
+    for expected_number, line in enumerate(value, start=1):
+        if (
+            not isinstance(line, OCRLineConfidence)
+            or line.line_number != expected_number
+            or not isinstance(line.text, str)
+            or not line.text.strip()
+        ):
+            return False
+        confidence = line.confidence
+        if confidence is not None and (
+            isinstance(confidence, bool)
+            or not isinstance(confidence, (int, float))
+            or not 0 <= confidence <= 1
+        ):
+            return False
+    return True
 
 
 def extract_claim_from_image(
@@ -94,6 +120,7 @@ def extract_claim_from_image(
     ocr_languages: tuple[str, ...] = ("eng", "sin", "tam"),
     low_confidence_threshold: float = 0.60,
     image_processor: ImageProcessor | None = None,
+    language_identifier: LanguageIdentifier | None = None,
 ) -> ImageClaimExtractionResult:
     """Extract a legal assertion from an image without judging its truth."""
     if not isinstance(image_bytes, bytes):
@@ -145,6 +172,7 @@ def extract_claim_from_image(
         not isinstance(ocr, OCRProviderResult)
         or not isinstance(ocr.method, str)
         or not ocr.method.strip()
+        or not _valid_line_confidences(ocr.line_confidences)
     ):
         return _failed(
             languages=ocr_languages,
@@ -168,10 +196,11 @@ def extract_claim_from_image(
             confidence=confidence,
             low_confidence=low_confidence,
             ocr_method=ocr.method.strip(),
+            line_confidences=ocr.line_confidences,
         )
 
     raw_text = ocr.raw_text
-    cleaned = clean_text(raw_text)
+    cleaned = clean_text(raw_text, ocr_mode=True)
     if not cleaned:
         return _failed(
             languages=ocr_languages,
@@ -180,9 +209,13 @@ def extract_claim_from_image(
             confidence=confidence,
             low_confidence=low_confidence,
             ocr_method=ocr.method.strip(),
+            line_confidences=ocr.line_confidences,
         )
 
-    language_detection = detect_language(cleaned)
+    language_detection = detect_language(
+        cleaned,
+        language_identifier=language_identifier,
+    )
     extraction = extract_legal_claim(cleaned, provider=claim_provider)
     error = None
     if extraction.status == "failed":
@@ -206,4 +239,5 @@ def extract_claim_from_image(
         ocr_method=ocr.method.strip(),
         claim_extraction_method=extraction.method,
         error=error,
+        ocr_line_confidences=ocr.line_confidences,
     )

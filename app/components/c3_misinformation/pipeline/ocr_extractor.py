@@ -7,6 +7,7 @@ import re
 import warnings
 from dataclasses import dataclass
 from io import BytesIO
+from itertools import pairwise
 from typing import Any, Literal, Protocol
 
 ImageFailureReason = Literal[
@@ -23,6 +24,11 @@ OCRFailureReason = Literal[
     "ocr_provider_error",
     "invalid_ocr_response",
 ]
+SUPPORTED_OCR_LANGUAGES = frozenset({"eng", "sin", "tam"})
+_DESKEW_SAMPLE_MAX_DIMENSION = 512
+_DESKEW_ANGLE_STEP_DEGREES = 0.5
+_DESKEW_MIN_SCORE_IMPROVEMENT = 0.08
+_DESKEW_MIN_FOREGROUND_PIXELS = 64
 
 
 class ImageProcessingError(RuntimeError):
@@ -49,12 +55,38 @@ class ImageProcessingConfig:
     max_decoded_pixels: int
     improve_contrast: bool = True
     reduce_noise: bool = False
+    max_processed_pixels: int = 40_000_000
+    scale_factor: Literal[1, 2] = 1
+    deskew: bool = False
+    deskew_max_angle_degrees: float = 5.0
 
     def __post_init__(self) -> None:
         if isinstance(self.max_file_bytes, bool) or self.max_file_bytes <= 0:
             raise ValueError("max_file_bytes must be a positive integer")
         if isinstance(self.max_decoded_pixels, bool) or self.max_decoded_pixels <= 0:
             raise ValueError("max_decoded_pixels must be a positive integer")
+        if (
+            isinstance(self.max_processed_pixels, bool)
+            or self.max_processed_pixels <= 0
+        ):
+            raise ValueError("max_processed_pixels must be a positive integer")
+        if (
+            isinstance(self.scale_factor, bool)
+            or not isinstance(self.scale_factor, int)
+            or self.scale_factor not in (1, 2)
+        ):
+            raise ValueError("scale_factor must be 1 or 2")
+        if not isinstance(self.deskew, bool):
+            raise TypeError("deskew must be a boolean")
+        if (
+            isinstance(self.deskew_max_angle_degrees, bool)
+            or not isinstance(self.deskew_max_angle_degrees, (int, float))
+            or not math.isfinite(self.deskew_max_angle_degrees)
+            or not 1 <= self.deskew_max_angle_degrees <= 10
+        ):
+            raise ValueError(
+                "deskew_max_angle_degrees must be between 1 and 10"
+            )
 
 
 @dataclass(frozen=True)
@@ -66,10 +98,20 @@ class ProcessedImage:
 
 
 @dataclass(frozen=True)
+class OCRLineConfidence:
+    """Confidence for one OCR output line; this is not legal confidence."""
+
+    line_number: int
+    text: str
+    confidence: float | None
+
+
+@dataclass(frozen=True)
 class OCRProviderResult:
     raw_text: str
     confidence: float | None
     method: str
+    line_confidences: tuple[OCRLineConfidence, ...] = ()
 
 
 class ImageProcessor(Protocol):
@@ -150,6 +192,116 @@ def _load_pillow() -> tuple[Any, Any, Any, Any]:
     return Image, ImageEnhance, ImageFilter, ImageOps
 
 
+def _otsu_threshold(image: Any) -> int:
+    histogram = image.histogram()
+    total = sum(histogram)
+    weighted_total = sum(index * count for index, count in enumerate(histogram))
+    background_count = 0
+    background_weight = 0
+    best_variance = -1.0
+    best_threshold = 127
+    for threshold, count in enumerate(histogram):
+        background_count += count
+        if background_count == 0:
+            continue
+        foreground_count = total - background_count
+        if foreground_count == 0:
+            break
+        background_weight += threshold * count
+        background_mean = background_weight / background_count
+        foreground_mean = (
+            weighted_total - background_weight
+        ) / foreground_count
+        variance = (
+            background_count
+            * foreground_count
+            * (background_mean - foreground_mean) ** 2
+        )
+        if variance > best_variance:
+            best_variance = variance
+            best_threshold = threshold
+    return best_threshold
+
+
+def _horizontal_projection_score(binary_image: Any) -> float:
+    width, height = binary_image.size
+    row_counts = [
+        binary_image.crop((0, row, width, row + 1)).histogram()[255]
+        for row in range(height)
+    ]
+    return float(
+        sum(
+            (current - previous) ** 2
+            for previous, current in pairwise(row_counts)
+        )
+    )
+
+
+def _estimate_deskew_angle(
+    grayscale: Any,
+    *,
+    Image: Any,
+    ImageOps: Any,
+    max_angle_degrees: float,
+) -> float | None:
+    """Estimate a small correction angle from horizontal text projections."""
+    sample = ImageOps.autocontrast(grayscale)
+    if max(sample.size) > _DESKEW_SAMPLE_MAX_DIMENSION:
+        ratio = _DESKEW_SAMPLE_MAX_DIMENSION / max(sample.size)
+        sample = sample.resize(
+            (
+                max(1, round(sample.width * ratio)),
+                max(1, round(sample.height * ratio)),
+            ),
+            resample=Image.Resampling.BILINEAR,
+        )
+    threshold = _otsu_threshold(sample)
+    binary = sample.point(
+        [255 if value <= threshold else 0 for value in range(256)],
+        mode="L",
+    )
+    foreground_pixels = binary.histogram()[255]
+    total_pixels = binary.width * binary.height
+    if (
+        foreground_pixels < _DESKEW_MIN_FOREGROUND_PIXELS
+        or foreground_pixels > total_pixels * 0.5
+    ):
+        return None
+
+    baseline_score = _horizontal_projection_score(binary)
+    if baseline_score <= 0:
+        return None
+    steps = int(max_angle_degrees / _DESKEW_ANGLE_STEP_DEGREES)
+    candidates = (
+        step * _DESKEW_ANGLE_STEP_DEGREES
+        for step in range(-steps, steps + 1)
+    )
+    best_angle = 0.0
+    best_score = baseline_score
+    for angle in candidates:
+        if angle == 0:
+            continue
+        rotated = binary.rotate(
+            angle,
+            resample=Image.Resampling.NEAREST,
+            expand=False,
+            fillcolor=0,
+        )
+        score = _horizontal_projection_score(rotated)
+        if score > best_score:
+            best_angle = angle
+            best_score = score
+
+    improvement = (best_score - baseline_score) / baseline_score
+    if (
+        best_angle == 0
+        or abs(best_angle) >= max_angle_degrees
+        or improvement < _DESKEW_MIN_SCORE_IMPROVEMENT
+    ):
+        return None
+    return best_angle
+
+
 class PillowImageProcessor:
     """Decode, orient, and normalize images without retaining the upload."""
 
@@ -184,6 +336,36 @@ class PillowImageProcessor:
                         background.alpha_composite(oriented.convert("RGBA"))
                         oriented = background.convert("RGB")
                     grayscale = ImageOps.grayscale(oriented)
+                    if config.deskew:
+                        correction_angle = _estimate_deskew_angle(
+                            grayscale,
+                            Image=Image,
+                            ImageOps=ImageOps,
+                            max_angle_degrees=config.deskew_max_angle_degrees,
+                        )
+                        if correction_angle is not None:
+                            grayscale = grayscale.rotate(
+                                correction_angle,
+                                resample=Image.Resampling.BICUBIC,
+                                expand=True,
+                                fillcolor=255,
+                            )
+                            if (
+                                grayscale.width * grayscale.height
+                                > config.max_processed_pixels
+                            ):
+                                raise ImageProcessingError(
+                                    "decoded_image_too_large"
+                                )
+                    scaled_width = grayscale.width * config.scale_factor
+                    scaled_height = grayscale.height * config.scale_factor
+                    if scaled_width * scaled_height > config.max_processed_pixels:
+                        raise ImageProcessingError("decoded_image_too_large")
+                    if config.scale_factor != 1:
+                        grayscale = grayscale.resize(
+                            (scaled_width, scaled_height),
+                            resample=Image.Resampling.LANCZOS,
+                        )
                     if config.improve_contrast:
                         grayscale = ImageEnhance.Contrast(grayscale).enhance(1.25)
                     if config.reduce_noise:
@@ -208,7 +390,8 @@ class PillowImageProcessor:
         )
 
 
-def _validated_languages(languages: tuple[str, ...]) -> tuple[str, ...]:
+def validate_ocr_languages(languages: tuple[str, ...]) -> tuple[str, ...]:
+    """Validate and deduplicate the C3-supported Tesseract language packs."""
     if not isinstance(languages, tuple) or not languages:
         raise OCRProviderError("invalid_ocr_response")
     normalized: list[str] = []
@@ -217,6 +400,8 @@ def _validated_languages(languages: tuple[str, ...]) -> tuple[str, ...]:
             r"[A-Za-z0-9_]+", language
         ):
             raise OCRProviderError("invalid_ocr_response")
+        if language not in SUPPORTED_OCR_LANGUAGES:
+            raise OCRProviderError("ocr_language_unavailable")
         if language not in normalized:
             normalized.append(language)
     return tuple(normalized)
@@ -225,13 +410,18 @@ def _validated_languages(languages: tuple[str, ...]) -> tuple[str, ...]:
 class TesseractOCRProvider:
     """Optional pytesseract adapter; no executable or model is downloaded."""
 
+    def __init__(self, *, psm: int = 6) -> None:
+        if isinstance(psm, bool) or not isinstance(psm, int) or psm not in (6, 11):
+            raise ValueError("psm must be 6 or 11")
+        self.psm = psm
+
     def extract(
         self,
         image: ProcessedImage,
         *,
         languages: tuple[str, ...],
     ) -> OCRProviderResult:
-        configured_languages = _validated_languages(languages)
+        configured_languages = validate_ocr_languages(languages)
         try:
             import pytesseract
             from PIL import Image
@@ -252,7 +442,7 @@ class TesseractOCRProvider:
                 data = pytesseract.image_to_data(
                     prepared,
                     lang="+".join(configured_languages),
-                    config="--psm 6",
+                    config=f"--psm {self.psm}",
                     output_type=pytesseract.Output.DICT,
                 )
         except getattr(pytesseract, "TesseractNotFoundError", RuntimeError):
@@ -277,6 +467,9 @@ class TesseractOCRProvider:
 
         words: list[str] = []
         scores: list[float] = []
+        line_words: list[str] = []
+        line_scores: list[float] = []
+        line_confidences: list[OCRLineConfidence] = []
         previous_line: tuple[Any, Any, Any] | None = None
         blocks = data.get("block_num", [])
         paragraphs = data.get("par_num", [])
@@ -291,20 +484,50 @@ class TesseractOCRProvider:
                 lines[index] if index < len(lines) else None,
             )
             if words and line_key != previous_line:
+                line_confidences.append(
+                    OCRLineConfidence(
+                        line_number=len(line_confidences) + 1,
+                        text=" ".join(line_words),
+                        confidence=(
+                            sum(line_scores) / len(line_scores)
+                            if line_scores
+                            else None
+                        ),
+                    )
+                )
+                line_words = []
+                line_scores = []
                 words.append("\n")
             elif words:
                 words.append(" ")
             words.append(word)
+            line_words.append(word)
             previous_line = line_key
             try:
                 score = float(confidences[index])
             except (IndexError, TypeError, ValueError):
                 continue
             if math.isfinite(score) and 0 <= score <= 100:
-                scores.append(score / 100.0)
+                normalized_score = score / 100.0
+                scores.append(normalized_score)
+                line_scores.append(normalized_score)
+
+        if line_words:
+            line_confidences.append(
+                OCRLineConfidence(
+                    line_number=len(line_confidences) + 1,
+                    text=" ".join(line_words),
+                    confidence=(
+                        sum(line_scores) / len(line_scores)
+                        if line_scores
+                        else None
+                    ),
+                )
+            )
 
         return OCRProviderResult(
             raw_text="".join(words).strip(),
             confidence=(sum(scores) / len(scores)) if scores else None,
             method="tesseract",
+            line_confidences=tuple(line_confidences),
         )

@@ -14,9 +14,13 @@ from app.components.c3_misinformation.pipeline.claim_extraction import (
     ClaimExtractionProviderError,
     ClaimExtractionProviderResponse,
 )
+from app.components.c3_misinformation.pipeline.language_detection import (
+    LanguageIdentification,
+)
 from app.components.c3_misinformation.pipeline.ocr_extractor import (
     ImageProcessingConfig,
     ImageProcessingError,
+    OCRLineConfidence,
     OCRProviderError,
     OCRProviderResult,
     PillowImageProcessor,
@@ -88,16 +92,24 @@ def run_pipeline(
     confidence=0.95,
     claim_provider=None,
     ocr_error=None,
+    line_confidences=(),
+    language_identifier=None,
 ):
     return extract_claim_from_image(
         image,
         ocr_provider=StubOCRProvider(
-            result=OCRProviderResult(text, confidence, "stub-ocr"),
+            result=OCRProviderResult(
+                text,
+                confidence,
+                "stub-ocr",
+                line_confidences=line_confidences,
+            ),
             error=ocr_error,
         ),
         claim_provider=claim_provider or StubClaimProvider(),
         image_config=CONFIG,
         image_processor=DeterministicImageProcessor(),
+        language_identifier=language_identifier,
     )
 
 
@@ -126,6 +138,87 @@ class ImageClaimServiceTests(TestCase):
         with Image.open(BytesIO(result.data)) as prepared:
             self.assertEqual(prepared.format, "PNG")
             self.assertEqual(prepared.mode, "L")
+
+    def test_real_preprocessor_supports_two_x_enlargement(self):
+        from PIL import Image
+
+        source = BytesIO()
+        Image.new("RGB", (4, 3), "white").save(source, format="PNG")
+        result = PillowImageProcessor().preprocess(
+            source.getvalue(),
+            config=ImageProcessingConfig(
+                max_file_bytes=10_000,
+                max_decoded_pixels=1_000,
+                max_processed_pixels=100,
+                scale_factor=2,
+                improve_contrast=False,
+            ),
+        )
+        self.assertEqual((result.width, result.height), (8, 6))
+
+    def test_optional_deskew_expands_canvas_without_cropping(self):
+        from PIL import Image
+
+        source = BytesIO()
+        Image.new("L", (20, 10), "white").save(source, format="PNG")
+        with patch(
+            "app.components.c3_misinformation.pipeline.ocr_extractor."
+            "_estimate_deskew_angle",
+            return_value=3.0,
+        ):
+            result = PillowImageProcessor().preprocess(
+                source.getvalue(),
+                config=ImageProcessingConfig(
+                    max_file_bytes=10_000,
+                    max_decoded_pixels=1_000,
+                    max_processed_pixels=1_000,
+                    improve_contrast=False,
+                    deskew=True,
+                ),
+            )
+        self.assertGreater(result.width, 20)
+        self.assertGreater(result.height, 10)
+
+    def test_deskew_rotation_obeys_processed_pixel_limit(self):
+        from PIL import Image
+
+        source = BytesIO()
+        Image.new("L", (20, 10), "white").save(source, format="PNG")
+        with (
+            patch(
+                "app.components.c3_misinformation.pipeline.ocr_extractor."
+                "_estimate_deskew_angle",
+                return_value=3.0,
+            ),
+            self.assertRaises(ImageProcessingError) as raised,
+        ):
+            PillowImageProcessor().preprocess(
+                source.getvalue(),
+                config=ImageProcessingConfig(
+                    max_file_bytes=10_000,
+                    max_decoded_pixels=1_000,
+                    max_processed_pixels=200,
+                    deskew=True,
+                ),
+            )
+        self.assertEqual(raised.exception.reason, "decoded_image_too_large")
+
+    def test_real_preprocessor_rejects_enlargement_over_processed_pixel_limit(self):
+        from PIL import Image
+
+        source = BytesIO()
+        Image.new("RGB", (4, 3), "white").save(source, format="PNG")
+        with self.assertRaises(ImageProcessingError) as raised:
+            PillowImageProcessor().preprocess(
+                source.getvalue(),
+                config=ImageProcessingConfig(
+                    max_file_bytes=10_000,
+                    max_decoded_pixels=1_000,
+                    max_processed_pixels=47,
+                    scale_factor=2,
+                ),
+            )
+        self.assertEqual(raised.exception.reason, "decoded_image_too_large")
 
     def test_real_preprocessor_composites_transparent_png_on_white(self):
         from PIL import Image
@@ -232,6 +325,17 @@ class ImageClaimServiceTests(TestCase):
         self.assertFalse(run_pipeline(confidence=0.60).low_confidence)
         self.assertTrue(run_pipeline(confidence=None).low_confidence)
 
+    def test_per_line_confidence_is_preserved_separately(self):
+        lines = (
+            OCRLineConfidence(1, "Section 10", 0.9),
+            OCRLineConfidence(2, "applies", None),
+        )
+        result = run_pipeline(
+            text="Section 10\napplies",
+            line_confidences=lines,
+        )
+        self.assertEqual(result.ocr_line_confidences, lines)
+
     def test_ocr_provider_unavailable_is_sanitized(self):
         result = run_pipeline(ocr_error="ocr_provider_unavailable")
         self.assertEqual(result.error.code, "ocr_provider_unavailable")
@@ -272,6 +376,17 @@ class ImageClaimServiceTests(TestCase):
             ("ta", "detected"),
         )
         self.assertEqual(mixed.language_detection_status, "uncertain")
+
+    def test_configured_statistical_identifier_is_used_for_english(self):
+        class EnglishIdentifier:
+            def identify(self, text):
+                return LanguageIdentification("en", "fasttext:test", 0.9)
+
+        result = run_pipeline(language_identifier=EnglishIdentifier())
+        self.assertEqual(
+            (result.detected_language, result.language_detection_status),
+            ("en", "detected"),
+        )
 
     def test_existing_non_extraction_outcomes_are_preserved(self):
         for status in ("multiple_claims", "ambiguous", "no_legal_assertion"):
@@ -358,3 +473,28 @@ class TesseractOCRProviderTests(TestCase):
         self.assertEqual(result.raw_text, "Section 10\napplies")
         self.assertAlmostEqual(result.confidence, 0.90)
         self.assertEqual(result.method, "tesseract")
+        self.assertEqual(
+            tuple((line.line_number, line.text) for line in result.line_confidences),
+            ((1, "Section 10"), (2, "applies")),
+        )
+        self.assertAlmostEqual(result.line_confidences[0].confidence, 0.90)
+        self.assertAlmostEqual(result.line_confidences[1].confidence, 0.90)
+
+    def test_psm_is_configurable_and_defaults_to_six(self):
+        self.assertEqual(TesseractOCRProvider().psm, 6)
+        self.assertEqual(TesseractOCRProvider(psm=11).psm, 11)
+        with self.assertRaises(ValueError):
+            TesseractOCRProvider(psm=4)
+
+    def test_configured_psm_is_passed_to_tesseract(self):
+        import pytesseract
+
+        data = {"text": [], "conf": []}
+        with (
+            patch.object(pytesseract, "get_languages", return_value=["eng"]),
+            patch.object(
+                pytesseract, "image_to_data", return_value=data
+            ) as image_to_data,
+        ):
+            TesseractOCRProvider(psm=11).extract(self.image, languages=("eng",))
+        self.assertEqual(image_to_data.call_args.kwargs["config"], "--psm 11")

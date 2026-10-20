@@ -5,7 +5,8 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 from app.components.c3_misinformation.agents.gemini_adapter import (
-    GeminiAdapterError, GeminiConfigurationError,
+    GeminiAdapterError,
+    GeminiConfigurationError,
 )
 from app.components.c3_misinformation.pipeline import claim_extraction as extraction
 from app.components.c3_misinformation.pipeline.claim_extraction import (
@@ -163,6 +164,9 @@ class ClaimExtractionTests(unittest.TestCase):
         self.assertEqual(prompt["input"], {"cleaned_text": cleaned})
         self.assertIn("extraction only", prompt["trusted_instructions"])
         self.assertIn("Never turn a question", prompt["trusted_instructions"])
+        self.assertIn("quoted text", prompt["trusted_instructions"])
+        self.assertIn("hypothetical", prompt["trusted_instructions"])
+        self.assertIn("untrusted text", prompt["trusted_instructions"])
         self.assertEqual(
             result,
             ClaimExtractionProviderResponse(

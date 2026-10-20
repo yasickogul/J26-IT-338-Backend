@@ -9,6 +9,9 @@ from app.components.c3_misinformation.image_api import get_image_claim_extractor
 from app.components.c3_misinformation.image_claim_service import (
     ImageClaimExtractionResult,
 )
+from app.components.c3_misinformation.pipeline.ocr_extractor import (
+    OCRLineConfidence,
+)
 from app.components.c3_misinformation.router import router
 
 
@@ -34,6 +37,9 @@ class ImageApiTests(TestCase):
                 language_detection_reason="model_unavailable",
                 ocr_method="stub-ocr",
                 claim_extraction_method="stub-claim",
+                ocr_line_confidences=(
+                    OCRLineConfidence(1, "Section 10 applies.", 0.91),
+                ),
             )
 
         self.app.dependency_overrides[get_image_claim_extractor] = lambda: extractor
@@ -67,6 +73,13 @@ class ImageApiTests(TestCase):
                 "language_detection_reason": "model_unavailable",
                 "ocr_method": "stub-ocr",
                 "claim_extraction_method": "stub-claim",
+                "ocr_line_confidences": [
+                    {
+                        "line_number": 1,
+                        "text": "Section 10 applies.",
+                        "confidence": 0.91,
+                    }
+                ],
                 "error": None,
             },
         )
