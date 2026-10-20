@@ -8,8 +8,13 @@ from __future__ import annotations
 
 from typing import Any
 
-from app.components.c1_CaseAnalysis.analysis.lm_studio import enrich_analysis_with_lm_studio
-from app.components.c1_CaseAnalysis.config import ANALYSIS_MODEL_VERSION, RETRIEVAL_DISCLAIMER
+from app.components.c1_CaseAnalysis.analysis.lm_studio import (
+    enrich_analysis_with_lm_studio,
+)
+from app.components.c1_CaseAnalysis.config import (
+    ANALYSIS_MODEL_VERSION,
+    RETRIEVAL_DISCLAIMER,
+)
 from app.components.c1_CaseAnalysis.schemas import (
     CaseAnalysisSection,
     ExtractedLegalInfo,

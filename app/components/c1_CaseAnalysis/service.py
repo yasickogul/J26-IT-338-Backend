@@ -26,10 +26,7 @@ from app.components.c1_CaseAnalysis.retrieval.query_builder import (
     build_retrieval_query_from_extraction,
     build_retrieval_query_from_intake,
 )
-from app.components.c1_CaseAnalysis.retrieval.semantic import (
-    SemanticRetrievalError,
-    SemanticRetriever,
-)
+from app.components.c1_CaseAnalysis.retrieval.semantic import SemanticRetriever
 from app.components.c1_CaseAnalysis.schemas import (
     CaseIntakeRequest,
     ExtractedLegalInfo,
@@ -219,7 +216,7 @@ class Stage2Service:
                     query = build_retrieval_query_from_intake(
                         CaseIntakeRequest.model_validate(fallback_payload)
                     )
-                except Exception as exc:  # noqa: BLE001
+                except Exception as exc:
                     raise ValueError("RETRIEVAL_QUERY_EMPTY") from exc
 
         factory = self._retrieval_session_factory()

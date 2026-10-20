@@ -105,9 +105,8 @@ async def test_embed_query_rejects_bad_dimension():
     with patch(
         "app.components.c1_CaseAnalysis.retrieval.semantic.get_embedder",
         return_value=FakeEmbedder(),
-    ):
-        with pytest.raises(SemanticRetrievalError) as exc:
-            await embed_query("Enough characters for a meaningful query here.")
+    ), pytest.raises(SemanticRetrievalError) as exc:
+        await embed_query("Enough characters for a meaningful query here.")
     assert exc.value.code == "EMBEDDING_DIM_MISMATCH"
 
 
@@ -197,9 +196,8 @@ async def test_semantic_retriever_database_failure():
     with patch(
         "app.components.c1_CaseAnalysis.retrieval.semantic.embed_query",
         new=AsyncMock(return_value=[0.0] * 384),
-    ):
-        with pytest.raises(SemanticRetrievalError) as exc:
-            await SemanticRetriever().search(session, "A sufficiently long query for retrieval.")
+    ), pytest.raises(SemanticRetrievalError) as exc:
+        await SemanticRetriever().search(session, "A sufficiently long query for retrieval.")
     assert exc.value.code == "DATABASE_SEARCH_FAILED"
 
 

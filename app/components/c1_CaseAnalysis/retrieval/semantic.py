@@ -8,7 +8,8 @@ from __future__ import annotations
 
 import asyncio
 import math
-from typing import Any, Sequence
+from collections.abc import Sequence
+from typing import Any
 
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -127,7 +128,7 @@ async def embed_query(query: str) -> list[float]:
         return await asyncio.to_thread(_encode)
     except SemanticRetrievalError:
         raise
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         raise SemanticRetrievalError(
             "EMBEDDING_FAILED",
             f"Failed to embed retrieval query: {type(exc).__name__}: {exc}",
@@ -157,7 +158,7 @@ class SemanticRetriever:
                 },
             )
             rows = result.mappings().all()
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             raise SemanticRetrievalError(
                 "DATABASE_SEARCH_FAILED",
                 f"Semantic search failed: {type(exc).__name__}: {exc}",
