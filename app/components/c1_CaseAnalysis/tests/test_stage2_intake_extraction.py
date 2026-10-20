@@ -172,12 +172,14 @@ def test_explicit_case_number_preserved_separately_from_cites():
     assert "CA/PHC/0004/2021" != result.case_information.case_number
 
 
-def test_ping_reports_stage2():
+def test_ping_reports_stage3_capabilities():
     client = TestClient(app)
     r = client.get("/api/v1/c1/ping")
     assert r.status_code == 200
     assert r.json()["component"] == "c1"
-    assert r.json()["stage"] == 2
+    assert r.json()["stage"] == 3
+    assert r.json()["capabilities"]["semantic_retrieval"] is True
+    assert r.json()["capabilities"]["hybrid_retrieval"] is False
 
 
 def test_invalid_dispute_category_returns_422():
