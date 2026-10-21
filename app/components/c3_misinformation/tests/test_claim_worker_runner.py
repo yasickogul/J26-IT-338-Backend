@@ -190,6 +190,59 @@ class ClaimWorkerRunnerTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(runner.main(["--once"]), 1)
         self.assertNotIn("private claim", error_output.getvalue())
 
+    async def test_cli_falls_back_to_signal_signal_when_loop_handlers_unsupported(self):
+        loop = asyncio.get_running_loop()
+        installed = {}
+        sentinel = object()
+
+        def fake_signal(signum, handler):
+            installed[signum] = handler
+            return sentinel
+
+        async def fake_run(config, shutdown):
+            # Simulate Ctrl+C / SIGTERM delivered via the fallback handler.
+            self.assertFalse(shutdown.is_set())
+            installed[runner.signal.SIGINT](runner.signal.SIGINT, None)
+            await asyncio.sleep(0)
+            self.assertTrue(shutdown.is_set())
+            return None
+
+        with patch.object(
+            loop, "add_signal_handler", side_effect=NotImplementedError,
+        ), patch.object(loop, "remove_signal_handler") as remove, patch.object(
+            runner.signal, "getsignal", return_value="previous",
+        ), patch.object(
+            runner.signal, "signal", side_effect=fake_signal,
+        ), patch.object(
+            runner, "run_configured_worker", new=fake_run,
+        ), redirect_stdout(io.StringIO()):
+            result = await runner._run_cli(runner.WorkerRunnerConfig())
+
+        self.assertEqual(result, 0)
+        remove.assert_not_called()
+        # Handlers were installed for both signals, then restored to previous.
+        self.assertEqual(installed[runner.signal.SIGINT], "previous")
+        self.assertEqual(installed[runner.signal.SIGTERM], "previous")
+
+    async def test_cli_uses_loop_handlers_when_supported(self):
+        loop = asyncio.get_running_loop()
+
+        async def fake_run(config, shutdown):
+            return None
+
+        with patch.object(loop, "add_signal_handler") as add, patch.object(
+            loop, "remove_signal_handler",
+        ) as remove, patch.object(
+            runner.signal, "getsignal", return_value="previous",
+        ), patch.object(runner.signal, "signal") as sig, patch.object(
+            runner, "run_configured_worker", new=fake_run,
+        ), redirect_stdout(io.StringIO()):
+            self.assertEqual(await runner._run_cli(runner.WorkerRunnerConfig()), 0)
+
+        self.assertEqual(add.call_count, 2)
+        self.assertEqual(remove.call_count, 2)
+        self.assertEqual(sig.call_count, 2)  # only the restore calls
+
     def test_import_does_not_start_worker(self):
         with patch.object(runner, "process_one_claim") as process:
             self.assertTrue(callable(runner.main))

@@ -46,6 +46,27 @@ class WorkerDependencyTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(composed.config.top_k, 5)
         self.assertEqual(composed.rag_service.model, "gemini-3.5-flash-lite")
 
+    async def test_injected_adapter_factory_wins_over_qwen_environment(self):
+        class FakeAdapter:
+            def generate_json(self, prompt, schema):
+                return {"prompt": prompt, "schema": schema}
+
+        factory = unittest.mock.Mock(return_value=FakeAdapter())
+        with patch.dict("os.environ", {"C3_LLM_PROVIDER": "qwen"}), \
+             patch.object(dependencies, "create_structured_adapter") as qwen_factory:
+            composed = dependencies.create_worker_dependencies(
+                session_factory=unittest.mock.Mock(),
+                query_embedder=AsyncMock(),
+                gemini_adapter_factory=factory,
+            )
+            result = await composed.gemini_provider.generate_json(
+                {"claim": "synthetic"}, {"type": "object"},
+            )
+
+        self.assertEqual(result["prompt"], {"claim": "synthetic"})
+        factory.assert_called_once_with()
+        qwen_factory.assert_not_called()
+
     async def test_gemini_provider_factory_is_lazy_and_executes_off_loop(self):
         factory_thread_ids = []
         event_loop_thread = threading.get_ident()

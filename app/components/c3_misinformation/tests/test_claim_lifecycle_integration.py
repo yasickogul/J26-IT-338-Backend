@@ -571,8 +571,17 @@ class ClaimLifecycleIntegrationTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(completed.status_code, 200)
             self.assertEqual(completed.json()["result"], {"preserve": {"any": ["stored", 1]}})
 
-            self.client.cookies.set(COOKIE_NAME, "invalid")
-            invalid_session = self.client.get(f"/api/v1/c3/results/{CLAIM_ID}")
+            invalid_client = TestClient(self.app)
+            try:
+                # Keep this request unambiguous: self.client still owns the
+                # valid cookie, and httpx can retain both values when a cookie
+                # is reset with different domain/path metadata.
+                invalid_client.cookies.set(COOKIE_NAME, "invalid")
+                invalid_session = invalid_client.get(
+                    f"/api/v1/c3/results/{CLAIM_ID}",
+                )
+            finally:
+                invalid_client.close()
             self.assertEqual(invalid_session.status_code, 401)
         finally:
             foreign_client.close()
