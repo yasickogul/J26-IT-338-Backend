@@ -236,7 +236,9 @@ class WorkerDependencyTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertIsInstance(encoder, Encoder)
         hub.snapshot_download.assert_called_once_with(
-            MODEL_NAME, local_files_only=True,
+            MODEL_NAME,
+            allow_patterns=dependencies.LABSE_SNAPSHOT_ALLOW_PATTERNS,
+            local_files_only=True,
         )
         transformers.SentenceTransformer.assert_called_once_with(
             "/cached/labse", device="cpu",

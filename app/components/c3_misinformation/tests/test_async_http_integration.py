@@ -9,7 +9,7 @@ from fastapi import FastAPI
 import httpx
 
 from app.components.c3_misinformation import api
-from app.components.c3_misinformation.anonymous_claim_session import COOKIE_NAME
+from app.components.c3_misinformation.anonymous_claim_session import COOKIE_NAME, session_token_hash
 from app.components.c3_misinformation.router import router as c3_router
 from app.core.database import get_session
 
@@ -252,6 +252,53 @@ class AsyncC3HttpIntegrationTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(owned.json()["result"]["claim"], "සිංහල ප්‍රකාශය.")
         finally:
             await client_b.aclose()
+
+    async def test_history_requires_session_and_returns_only_owned_claims(self):
+        missing = await self.client.get("/api/v1/c3/history")
+        self.assertEqual(missing.status_code, 401)
+        self.assertEqual(missing.json()["detail"]["code"], "invalid_claim_session")
+
+        token = "A" * 43
+        self.client.cookies.set(COOKIE_NAME, token)
+        row = {
+            "claim_id": CLAIM_ID,
+            "extracted_claim": "Stored legal claim",
+            "processing_status": "completed",
+            "verdict": "True",
+            "created_at": NOW,
+        }
+        with patch.object(
+            api.repository, "list_owned_claim_history",
+            new=AsyncMock(return_value=[row]),
+        ) as lookup:
+            response = await self.client.get("/api/v1/c3/history?page=2&page_size=5")
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.headers["cache-control"], "no-store")
+        self.assertEqual(response.json()["page"], 2)
+        self.assertEqual(response.json()["page_size"], 5)
+        self.assertEqual(response.json()["items"][0]["claim_id"], str(CLAIM_ID))
+        self.assertEqual(response.json()["items"][0]["status"], "completed")
+        self.assertEqual(response.json()["items"][0]["verdict"], "True")
+        self.assertEqual(lookup.await_args.args[0], session_token_hash(token))
+        self.assertEqual(lookup.await_args.kwargs["page"], 2)
+        self.assertEqual(lookup.await_args.kwargs["page_size"], 5)
+
+    async def test_history_invalid_pagination_and_storage_error_are_safe(self):
+        self.client.cookies.set(COOKIE_NAME, "A" * 43)
+        with patch.object(api.repository, "list_owned_claim_history", new=AsyncMock()) as lookup:
+            invalid = await self.client.get("/api/v1/c3/history?page_size=101")
+        self.assertEqual(invalid.status_code, 400)
+        self.assertEqual(invalid.json()["detail"]["code"], "invalid_pagination")
+        lookup.assert_not_awaited()
+
+        with patch.object(
+            api.repository, "list_owned_claim_history",
+            new=AsyncMock(side_effect=RuntimeError("private database detail")),
+        ):
+            failed = await self.client.get("/api/v1/c3/history")
+        self.assertEqual(failed.status_code, 500)
+        self.assertEqual(failed.json()["detail"]["code"], "history_lookup_failed")
+        self.assertNotIn("private database detail", failed.text)
 
 
 if __name__ == "__main__":

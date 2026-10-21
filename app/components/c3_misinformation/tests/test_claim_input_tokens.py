@@ -72,7 +72,7 @@ class ClaimInputTokenTests(unittest.TestCase):
             with patch.dict(sys.modules, {"huggingface_hub": hub, "transformers": transformers}):
                 self.assertEqual(tokens._local_tokenizer_and_limit(), (tokenizer, 256))
                 self.assertEqual(tokens.effective_claim_token_limit(), 256)
-            download.assert_called_once_with(tokens.MODEL_NAME, local_files_only=True)
+            download.assert_called_once_with(tokens.MODEL_NAME, local_files_only=True, allow_patterns=["config.json", "tokenizer.json", "tokenizer_config.json", "special_tokens_map.json", "vocab.txt", "sentence_bert_config.json"])
             from_pretrained.assert_called_once_with(directory, local_files_only=True, use_fast=True)
 
     def test_missing_assets_and_invalid_cached_limit_are_unavailable(self):

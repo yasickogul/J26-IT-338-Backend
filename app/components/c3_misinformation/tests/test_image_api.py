@@ -5,7 +5,9 @@ from unittest import TestCase
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from app.components.c3_misinformation.image_api import get_image_claim_extractor
+from app.components.c3_misinformation.image_api import (
+    get_image_claim_extractor_dependency,
+)
 from app.components.c3_misinformation.image_claim_service import (
     ImageClaimExtractionResult,
 )
@@ -42,7 +44,7 @@ class ImageApiTests(TestCase):
                 ),
             )
 
-        self.app.dependency_overrides[get_image_claim_extractor] = lambda: extractor
+        self.app.dependency_overrides[get_image_claim_extractor_dependency] = lambda: extractor
         self.client = TestClient(self.app)
 
     def tearDown(self):
