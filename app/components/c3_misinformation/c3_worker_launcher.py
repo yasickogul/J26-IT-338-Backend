@@ -2,10 +2,12 @@
 from __future__ import annotations
 
 import os
-from pathlib import Path
 from collections.abc import Sequence
+from pathlib import Path
 
 from dotenv import dotenv_values
+
+from .config import llm_provider
 
 
 def load_gemini_api_key(dotenv_path: str | Path | None = None) -> bool:
@@ -28,8 +30,8 @@ def load_gemini_api_key(dotenv_path: str | Path | None = None) -> bool:
 
 
 def main(argv: Sequence[str] | None = None) -> int:
-    """Load C3's Gemini credential, then delegate to the existing runner."""
-    if not load_gemini_api_key():
+    """Prepare the explicitly selected C3 provider, then run the worker."""
+    if llm_provider() == "gemini" and not load_gemini_api_key():
         raise RuntimeError(
             "C3 worker requires GEMINI_API_KEY in the process environment or .env."
         )

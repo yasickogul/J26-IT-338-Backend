@@ -19,7 +19,9 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from .agents.gemini_adapter import DEFAULT_MODEL, GeminiAdapter
+from .agents.qwen_translation_provider import QwenTranslationProvider
 from .claim_worker import AsyncAnalyzer
+from .config import create_structured_adapter, llm_provider
 from .pipeline.c3_corpus_evidence import build_c3_evidence_packet
 from .pipeline.claim_input_tokens import validate_claim_input_tokens
 from .pipeline.labse_query_embedding import EXPECTED_DIMENSION, MODEL_NAME, embed_text
@@ -248,17 +250,29 @@ def create_worker_dependencies(
             raise RuntimeError("Evidence packet builder returned no packet.")
         return packet
 
-    provider = ThreadedGeminiProvider(
-        gemini_adapter_factory
-        if gemini_adapter_factory is not None
-        else (lambda: GeminiAdapter(model=DEFAULT_MODEL)),
-    )
+    # An explicitly supplied factory is an injection point used by tests and
+    # callers that own provider construction.  It must take precedence over
+    # the process-level production selection so a Qwen environment cannot
+    # replace an injected adapter.  Production composition still selects the
+    # configured provider when no factory is supplied.
+    if gemini_adapter_factory is not None:
+        adapter_factory = gemini_adapter_factory
+        configured_multilingual_adapter = multilingual_adapter
+    elif llm_provider() == "qwen":
+        adapter_factory = create_structured_adapter
+        configured_multilingual_adapter = multilingual_adapter or MultilingualClaimAdapter(
+            translation_provider=QwenTranslationProvider(),
+        )
+    else:
+        adapter_factory = gemini_adapter_factory or (lambda: GeminiAdapter(model=DEFAULT_MODEL))
+        configured_multilingual_adapter = multilingual_adapter
+    provider = ThreadedGeminiProvider(adapter_factory)
     rag_service = AsyncRagService(
         evidence_packet_builder=evidence_packet_builder,
         provider=provider,
         token_validator=token_validator,
         model=DEFAULT_MODEL,
-        multilingual_adapter=multilingual_adapter,
+        multilingual_adapter=configured_multilingual_adapter,
     )
     analyzer = create_worker_rag_analyzer(
         rag_service,

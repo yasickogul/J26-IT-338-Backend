@@ -133,12 +133,22 @@ async def _run_cli(config: WorkerRunnerConfig) -> int:
     stop = asyncio.Event()
     loop = asyncio.get_running_loop()
     registered: list[signal.Signals] = []
+    fallback: list[signal.Signals] = []
     previous_handlers: dict[signal.Signals, Any] = {}
+
+    def _request_stop_threadsafe(_signum: int, _frame: Any) -> None:
+        loop.call_soon_threadsafe(stop.set)
+
     try:
         for signum in (signal.SIGINT, signal.SIGTERM):
             previous_handlers[signum] = signal.getsignal(signum)
-            loop.add_signal_handler(signum, stop.set)
-            registered.append(signum)
+            try:
+                loop.add_signal_handler(signum, stop.set)
+                registered.append(signum)
+            except NotImplementedError:
+                # Windows event loops do not support add_signal_handler.
+                signal.signal(signum, _request_stop_threadsafe)
+                fallback.append(signum)
         outcome = await run_configured_worker(config=config, shutdown=stop)
         if not config.poll:
             print(
@@ -149,6 +159,8 @@ async def _run_cli(config: WorkerRunnerConfig) -> int:
     finally:
         for signum in registered:
             loop.remove_signal_handler(signum)
+            signal.signal(signum, previous_handlers[signum])
+        for signum in fallback:
             signal.signal(signum, previous_handlers[signum])
 
 

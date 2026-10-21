@@ -24,13 +24,14 @@ from .claim_lifecycle_contract import (
     ClaimStorageError,
 )
 from .claim_worker_contract import ClaimExtractionWorkerError, WorkerOutcome
-from .config import claim_extraction_enabled
+from .config import claim_extraction_enabled, llm_provider
 from .pipeline.claim_extraction import (
     ClaimExtractionProvider,
     ClaimExtractionResult,
     GeminiClaimExtractionProvider,
     extract_legal_claim,
 )
+from .pipeline.qwen_claim_extraction import QwenClaimExtractionProvider
 from .rag_contract import RagResult, RagServiceError
 from .rag_response import serialize_rag_result
 
@@ -167,7 +168,10 @@ async def _run_extraction(
 ) -> ClaimExtractionResult:
     # Both provider construction and extraction are synchronous provider
     # boundaries; isolate them from the asyncio event loop.
-    factory = extractor_factory or GeminiClaimExtractionProvider
+    factory = extractor_factory or (
+        QwenClaimExtractionProvider if llm_provider() == "qwen"
+        else GeminiClaimExtractionProvider
+    )
     executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="claim-extraction")
     try:
         provider_future = executor.submit(factory)
