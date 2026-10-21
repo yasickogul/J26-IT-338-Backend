@@ -25,9 +25,12 @@ TRUSTED_INSTRUCTIONS = (
     "Preserve legal conditions, exceptions, exact evidence text, and parent context. "
     "Do not infer truth or confidence from similarity, and do not assume the evidence proves "
     "current legal validity. Cite only supplied evidence IDs. Clearly represent insufficient "
-    "evidence. In question mode, do not emit a truth verdict. In claim mode, use only True, "
-    "False, or Misleading when supported; otherwise use a null claim verdict and mark evidence "
-    "as insufficient."
+    "evidence. Silence, missing coverage, or unrelated retrieved passages are absence of "
+    "evidence, not a contradiction: never label a claim False merely because the supplied "
+    "passages do not address it. In claim mode, use only True, False, or Misleading when "
+    "supported by directly relevant supplied evidence; use False only when a cited passage "
+    "directly contradicts the claim. Otherwise use a null claim verdict and mark evidence as "
+    "insufficient. In question mode, do not emit a truth verdict."
 )
 
 

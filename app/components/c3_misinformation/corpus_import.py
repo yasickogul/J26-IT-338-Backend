@@ -194,9 +194,16 @@ async def import_c3_artifacts(
     *,
     session: AsyncSession,
     authorization: str,
+    incremental: bool = False,
     **paths: Any,
 ) -> dict[str, Any]:
-    """Perform one explicitly authorized first import; never merge or overwrite."""
+    """Import validated artifacts without updating or deleting existing rows.
+
+    The default remains the original empty-corpus first load.  ``incremental``
+    permits a reviewed additive batch, but only when every source ID, source
+    file hash, and chunk ID is new.  The same table lock and transaction cover
+    collision checks and both inserts.
+    """
     if authorization != IMPORT_AUTHORIZATION:
         raise PermissionError("Explicit C3 corpus import authorization is required")
     sources, chunks, summary = validate_c3_artifacts(**paths)
@@ -206,12 +213,38 @@ async def import_c3_artifacts(
         await session.execute(text(
             "LOCK TABLE c3.legal_sources, c3.legal_chunks IN SHARE ROW EXCLUSIVE MODE"
         ))
-        existing = await session.execute(text(
-            "SELECT (SELECT count(*) FROM c3.legal_sources) + "
-            "(SELECT count(*) FROM c3.legal_chunks)"
-        ))
-        if existing.scalar_one() != 0:
+        before = (await session.execute(text(
+            "SELECT (SELECT count(*) FROM c3.legal_sources) AS sources, "
+            "(SELECT count(*) FROM c3.legal_chunks) AS chunks"
+        ))).mappings().one()
+        if not incremental and before["sources"] + before["chunks"] != 0:
             raise ValueError("Refusing to import into a nonempty C3 legal corpus")
+        if incremental:
+            existing_sources = {
+                row.source_id: row.source_file_sha256
+                for row in (await session.execute(text(
+                    "SELECT source_id, source_file_sha256 FROM c3.legal_sources"
+                ))).all()
+            }
+            existing_hashes = set(existing_sources.values())
+            incoming_source_ids = {item["source_id"] for item in sources}
+            incoming_hashes = {item["source_file_sha256"] for item in sources}
+            source_collisions = sorted(incoming_source_ids & set(existing_sources))
+            hash_collisions = sorted(incoming_hashes & existing_hashes)
+            existing_chunk_ids = set((await session.execute(text(
+                "SELECT chunk_id FROM c3.legal_chunks"
+            ))).scalars().all())
+            incoming_chunk_ids = {item["chunk_id"] for item in chunks}
+            chunk_collisions = sorted(incoming_chunk_ids & existing_chunk_ids)
+            if source_collisions or hash_collisions or chunk_collisions:
+                raise ValueError(
+                    "Incremental C3 import collides with existing corpus rows: "
+                    f"source_ids={len(source_collisions)} "
+                    f"sample={source_collisions[:5]}, "
+                    f"source_hashes={len(hash_collisions)}, "
+                    f"chunk_ids={len(chunk_collisions)} "
+                    f"sample={chunk_collisions[:5]}"
+                )
         await session.execute(text("""
             INSERT INTO c3.legal_sources
                 (source_id, title, legal_domain, document_type, language, citation,
@@ -232,7 +265,17 @@ async def import_c3_artifacts(
                  CAST(:parent_context AS jsonb), :paragraph, :embedding_model,
                  CAST(:embedding AS vector))
         """), chunks)
-    return {**summary, "dry_run": False}
+    return {
+        **summary,
+        "dry_run": False,
+        "incremental": incremental,
+        "sources_before": before["sources"],
+        "chunks_before": before["chunks"],
+        "sources_added": len(sources),
+        "chunks_added": len(chunks),
+        "sources_after": before["sources"] + len(sources),
+        "chunks_after": before["chunks"] + len(chunks),
+    }
 
 
 def main() -> int:

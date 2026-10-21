@@ -26,6 +26,13 @@ def _expected_inputs(chunks):
     """Exact reviewed CompNet preparation, without tokenizer/model execution."""
     result = []
     for chunk in chunks:
+        # Later reviewed corpus batches may already carry their approved
+        # embedding text and provenance fields.  Preserve those records
+        # exactly; the historical batch below still uses its one documented
+        # deterministic split.
+        if "embedding_text" in chunk:
+            result.append(deepcopy(chunk))
+            continue
         if chunk["chunk_id"] != "CON-001-0004":
             result.append(dict(deepcopy(chunk), embedding_text=chunk["text"]))
             continue

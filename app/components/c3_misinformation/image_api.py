@@ -12,6 +12,7 @@ from typing import Annotated, Literal
 
 from fastapi import APIRouter, Depends, File, Response, UploadFile
 
+from .config import llm_provider
 from .image_api_schemas import ImageClaimExtractionResponse
 from .image_claim_service import (
     ImageClaimExtractionResult,
@@ -28,6 +29,7 @@ from .pipeline.ocr_extractor import (
     ImageProcessingConfig,
     TesseractOCRProvider,
 )
+from .pipeline.qwen_claim_extraction import QwenClaimExtractionProvider
 
 router = APIRouter(tags=["C3 image claim extraction"])
 ImageClaimExtractor = Callable[[bytes], ImageClaimExtractionResult]
@@ -203,7 +205,10 @@ def get_image_language_identifier() -> FastTextLanguageIdentifier:
 def get_image_claim_extractor() -> ImageClaimExtractor:
     runtime = get_ocr_runtime_config()
     ocr_provider = TesseractOCRProvider(psm=runtime.psm)
-    claim_provider = GeminiClaimExtractionProvider()
+    claim_provider = (
+        QwenClaimExtractionProvider() if llm_provider() == "qwen"
+        else GeminiClaimExtractionProvider()
+    )
     language_identifier = get_image_language_identifier()
 
     def extractor(image_bytes: bytes) -> ImageClaimExtractionResult:
