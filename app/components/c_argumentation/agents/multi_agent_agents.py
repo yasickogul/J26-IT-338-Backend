@@ -1,11 +1,21 @@
+
 """Sequential C4 legal-analysis agents backed by the local Qwen adapter."""
 
 from __future__ import annotations
 
 from typing import Any
 
-from ..pipeline.agent_common import bounded_prompt_text, compact_evidence, parse_agent_output
-from ..schemas_multi_agent import AuditorOutput, DefenseOutput, EvidenceBundle, PlaintiffOutput
+from ..pipeline.agent_common import (
+    bounded_prompt_text,
+    compact_evidence,
+    parse_agent_output,
+)
+from ..schemas_multi_agent import (
+    AuditorOutput,
+    DefenseOutput,
+    EvidenceBundle,
+    PlaintiffOutput,
+)
 
 
 def _text(result: Any) -> str:
@@ -16,7 +26,12 @@ class PlaintiffAgent:
     def __init__(self, llm: Any) -> None:
         self.llm = llm
 
-    def run(self, problem: str, facts: str, evidence: EvidenceBundle) -> PlaintiffOutput:
+    def run(
+        self,
+        problem: str,
+        facts: str,
+        evidence: EvidenceBundle,
+    ) -> PlaintiffOutput:
         prompt = (
             "Return exactly one JSON object matching this compact PlaintiffOutput shape: "
             '{"role":"plaintiff","arguments":[{"claim":"...","supporting_principles":[],"evidence_source_ids":[],"evidence_support":[],"assumptions":[],"missing_evidence":[],"limitations":[]}],"limitations":[],"unsupported_claim_warnings":[]}. '
@@ -29,15 +44,37 @@ class PlaintiffAgent:
             f"USER PROBLEM:\n{bounded_prompt_text(problem, 900, 'PROBLEM')}\nUSER FACTS:\n{bounded_prompt_text(facts, 900, 'FACTS')}\n"
             f"EVIDENCE LABEL: {evidence.evidence_label}\nEVIDENCE:\n{compact_evidence(evidence, max_chars_per_source=650)}"
         )
-        return parse_agent_output(_text(self.llm.generate(prompt, max_tokens=768, temperature=0.1, response_format={"type": "json_object"})), PlaintiffOutput)
+
+        return parse_agent_output(
+            _text(
+                self.llm.generate(
+                    prompt,
+                    max_tokens=768,
+                    temperature=0.1,
+                    response_format={"type": "json_object"},
+                )
+            ),
+            PlaintiffOutput,
+        )
 
 
 class DefenseAgent:
     def __init__(self, llm: Any) -> None:
         self.llm = llm
 
-    def run(self, problem: str, facts: str, evidence: EvidenceBundle, plaintiff: PlaintiffOutput) -> DefenseOutput:
-        plaintiff_json = plaintiff.model_dump_json() if hasattr(plaintiff, "model_dump_json") else plaintiff.json()
+    def run(
+        self,
+        problem: str,
+        facts: str,
+        evidence: EvidenceBundle,
+        plaintiff: PlaintiffOutput,
+    ) -> DefenseOutput:
+        plaintiff_json = (
+            plaintiff.model_dump_json()
+            if hasattr(plaintiff, "model_dump_json")
+            else plaintiff.json()
+        )
+
         prompt = (
             "Return exactly one JSON object matching this compact DefenseOutput shape: "
             '{"role":"defense","counterarguments":[{"challenged_claim":"...","counterargument":"...","evidence_source_ids":[],"factual_disputes":[],"possible_defenses":[],"missing_evidence":[],"limitations":[]}],"limitations":[],"unsupported_claim_warnings":[]}. '
@@ -50,7 +87,38 @@ class DefenseAgent:
             f"PROBLEM:\n{bounded_prompt_text(problem, 700, 'PROBLEM')}\nFACTS:\n{bounded_prompt_text(facts, 700, 'FACTS')}\n"
             f"PLAINTIFF OUTPUT:\n{bounded_prompt_text(plaintiff_json, 1400, 'PLAINTIFF_OUTPUT')}\nEVIDENCE:\n{compact_evidence(evidence, max_chars_per_source=550)}"
         )
-        return parse_agent_output(_text(self.llm.generate(prompt, max_tokens=768, temperature=0.1, response_format={"type": "json_object"})), DefenseOutput)
+
+        # First attempt uses the original 768-token limit.
+        # Retry once with a larger limit if JSON parsing or
+        # schema validation fails.
+        last_error: ValueError | None = None
+
+        for attempt in range(2):
+            try:
+                result = self.llm.generate(
+                    prompt,
+                    max_tokens=768 if attempt == 0 else 1024,
+                    temperature=0.1,
+                    response_format={"type": "json_object"},
+                )
+
+                return parse_agent_output(
+                    _text(result),
+                    DefenseOutput,
+                )
+
+            except ValueError as exc:
+                last_error = exc
+
+                print(
+                    f"[C4 DEFENSE] Invalid structured output "
+                    f"(attempt {attempt + 1}/2): {exc}",
+                    flush=True,
+                )
+
+        raise ValueError(
+            f"Defense Agent failed after 2 attempts: {last_error}"
+        )
 
 
 class NeutralAuditorAgent:
@@ -65,8 +133,18 @@ class NeutralAuditorAgent:
         plaintiff: PlaintiffOutput,
         defense: DefenseOutput,
     ) -> AuditorOutput:
-        plaintiff_json = plaintiff.model_dump_json() if hasattr(plaintiff, "model_dump_json") else plaintiff.json()
-        defense_json = defense.model_dump_json() if hasattr(defense, "model_dump_json") else defense.json()
+        plaintiff_json = (
+            plaintiff.model_dump_json()
+            if hasattr(plaintiff, "model_dump_json")
+            else plaintiff.json()
+        )
+
+        defense_json = (
+            defense.model_dump_json()
+            if hasattr(defense, "model_dump_json")
+            else defense.json()
+        )
+
         prompt = (
             "Return exactly one JSON object matching this compact AuditorOutput shape: "
             '{"role":"auditor","strengths":[],"weaknesses":[],"missing_evidence":[],"unsupported_claim_warnings":[],"contradictory_claims":[],"verified_source_ids":[],"evidence_sufficiency":"insufficient","assessment":"...","disclaimer":"Informational legal analysis only; not professional legal advice or a court verdict."}. '
@@ -79,4 +157,15 @@ class NeutralAuditorAgent:
             f"PROBLEM:\n{bounded_prompt_text(problem, 400, 'PROBLEM')}\nFACTS:\n{bounded_prompt_text(facts, 400, 'FACTS')}\nEVIDENCE:\n{compact_evidence(evidence, max_chars_per_source=450)}\n"
             f"PLAINTIFF:\n{bounded_prompt_text(plaintiff_json, 900, 'PLAINTIFF_OUTPUT')}\nDEFENSE:\n{bounded_prompt_text(defense_json, 900, 'DEFENSE_OUTPUT')}"
         )
-        return parse_agent_output(_text(self.llm.generate(prompt, max_tokens=768, temperature=0.1, response_format={"type": "json_object"})), AuditorOutput)
+
+        return parse_agent_output(
+            _text(
+                self.llm.generate(
+                    prompt,
+                    max_tokens=768,
+                    temperature=0.1,
+                    response_format={"type": "json_object"},
+                )
+            ),
+            AuditorOutput,
+        )

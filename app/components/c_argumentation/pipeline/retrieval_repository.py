@@ -69,10 +69,28 @@ FULL_TEXT_RETRIEVAL_SQL = text(
 # Backward-compatible name for callers and existing tests.
 RETRIEVAL_SQL = VECTOR_RETRIEVAL_SQL
 DEFAULT_RRF_K = 60
+ISSUE_RERANK_WEIGHT = 0.10
 _FTS_STOPWORDS = {
     "a", "an", "and", "are", "as", "at", "be", "by", "for", "from",
     "how", "in", "is", "of", "on", "or", "that", "the", "to", "what",
     "when", "where", "which", "with",
+}
+
+# These groups describe legal issues, rather than particular authorities or
+# case categories. A passage can receive a modest boost when it addresses
+# multiple groups. No group is a hard filter, so transferable principles from
+# another subject area remain eligible.
+_LEGAL_ISSUE_GROUPS = {
+    "contract": (
+        ("contract", "agreement", "covenant", "obligation"),
+        ("breach", "default", "nonperformance", "perform", "failure"),
+        ("remedy", "damages", "specific performance", "rescission", "termination", "novation"),
+    ),
+    "civil_evidence": (
+        ("burden", "onus", "proof", "prove"),
+        ("evidence", "document", "affidavit", "testimony", "witness"),
+        ("admiss", "presumption", "establish", "standard"),
+    ),
 }
 
 
@@ -92,6 +110,8 @@ class RetrievedPassage:
     full_text_score: float | None = None
     rrf_score: float | None = None
     retrieval_method: str = "vector"
+    issue_score: float | None = None
+    rerank_score: float | None = None
 
 
 def _passage_from_row(row: Any, *, method: str) -> RetrievedPassage:
@@ -118,6 +138,64 @@ def build_full_text_query(query_text: str) -> str:
     return " OR ".join(
         term for term in terms
         if len(term) >= 3 and term.lower() not in _FTS_STOPWORDS
+    )
+
+
+def detect_legal_issue(query_text: str) -> str | None:
+    """Return a narrow issue family for conservative query expansion."""
+
+    lowered = query_text.lower()
+    if re.search(r"\b(contract|agreement|breach|obligation|remed(?:y|ies)|perform(?:ance|ed)?)\b", lowered):
+        return "contract"
+    if re.search(r"\b(burden|onus|proof|document(?:ary)?|affidavit|admissib(?:ility|le))\b", lowered):
+        return "civil_evidence"
+    return None
+
+
+def build_issue_aware_full_text_query(query_text: str) -> str:
+    """Expand only recognized legal issues while retaining the original terms."""
+
+    base_query = build_full_text_query(query_text)
+    issue = detect_legal_issue(query_text)
+    if issue is None:
+        return base_query
+    issue_terms = [term for group in _LEGAL_ISSUE_GROUPS[issue] for term in group]
+    return " OR ".join(dict.fromkeys([term for term in (*base_query.split(" OR "), *issue_terms) if term]))
+
+
+def legal_issue_score(query_text: str, passage_text: str) -> float:
+    """Score matched issue groups in a passage from 0.0 to 1.0."""
+
+    issue = detect_legal_issue(query_text)
+    if issue is None:
+        return 0.0
+    lowered = passage_text.lower()
+    groups = _LEGAL_ISSUE_GROUPS[issue]
+    matched = sum(
+        any(re.search(rf"\b{re.escape(term)}", lowered) for term in group)
+        for group in groups
+    )
+    return matched / len(groups)
+
+
+def rerank_by_legal_issue(
+    query_text: str,
+    passages: list[RetrievedPassage],
+    *,
+    weight: float = ISSUE_RERANK_WEIGHT,
+) -> list[RetrievedPassage]:
+    """Apply a bounded issue boost after vector/full-text RRF fusion."""
+
+    reranked = []
+    for passage in passages:
+        issue_score = legal_issue_score(query_text, passage.chunk_text)
+        base_score = passage.rrf_score or 0.0
+        rerank_score = base_score * (1.0 + weight * issue_score)
+        reranked.append(replace(passage, issue_score=issue_score, rerank_score=rerank_score))
+    return sorted(
+        reranked,
+        key=lambda passage: (passage.rerank_score or 0.0, passage.rrf_score or 0.0, passage.similarity_score or -1.0),
+        reverse=True,
     )
 
 
@@ -243,13 +321,14 @@ async def search_hybrid_judgment_chunks(
 
     parameters = {
         "query_embedding": str(query_embedding),
-        "query_text": build_full_text_query(query_text),
+        "query_text": build_issue_aware_full_text_query(query_text),
         "candidate_limit": candidate_limit,
     }
     async with session_factory() as session:
         vector_rows, full_text_rows = await _execute_candidates(session, parameters)
     fused = _fuse_rankings(vector_rows, full_text_rows, rrf_k=rrf_k)
-    return diversify_passages(fused, top_k=top_k, max_per_judgment=max_per_judgment)
+    reranked = rerank_by_legal_issue(query_text, fused)
+    return diversify_passages(reranked, top_k=top_k, max_per_judgment=max_per_judgment)
 
 
 async def _execute_candidates(session: Any, parameters: dict[str, Any]) -> tuple[list[Any], list[Any]]:

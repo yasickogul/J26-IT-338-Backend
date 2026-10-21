@@ -3,14 +3,19 @@ from __future__ import annotations
 from datetime import date
 from uuid import uuid4
 
+from pytest import approx
+
 from app.components.c_argumentation.pipeline import rag_retriever
 from app.components.c_argumentation.pipeline.retrieval_repository import (
     FULL_TEXT_RETRIEVAL_SQL,
     RETRIEVAL_SQL,
     RetrievedPassage,
+    build_issue_aware_full_text_query,
     _fuse_rankings,
     build_full_text_query,
+    detect_legal_issue,
     diversify_passages,
+    rerank_by_legal_issue,
     search_judgment_chunks,
 )
 
@@ -75,6 +80,31 @@ def test_retrieval_sql_is_parameterized():
     assert ":query_text" in FULL_TEXT_RETRIEVAL_SQL.text
     assert "websearch_to_tsquery('english', :query_text)" in FULL_TEXT_RETRIEVAL_SQL.text
     assert build_full_text_query("registered deeds and property") == "registered OR deeds OR property"
+
+
+def test_issue_aware_query_expansion_is_limited_to_known_issue_families():
+    contract_query = build_issue_aware_full_text_query("What remedies follow a breach of contract?")
+    evidence_query = build_issue_aware_full_text_query("Who bears the burden of proof?")
+
+    assert detect_legal_issue("What remedies follow a breach of contract?") == "contract"
+    assert detect_legal_issue("Who bears the burden of proof?") == "civil_evidence"
+    assert "specific performance" in contract_query
+    assert "admiss" in evidence_query
+    assert build_issue_aware_full_text_query("What is the legal position?") == "legal OR position"
+
+
+def test_issue_rerank_is_bounded_and_preserves_metadata():
+    first = RetrievedPassage(uuid4(), uuid4(), "A contract was breached and damages were claimed.", 2, 3, "A", None, "https://example.test/a", 0.8, rrf_score=0.02)
+    second = RetrievedPassage(uuid4(), uuid4(), "The deed was attested before a notary.", 4, 5, "B", None, "https://example.test/b", 0.9, rrf_score=0.021)
+
+    ranked = rerank_by_legal_issue("What remedy follows breach of contract?", [first, second])
+
+    assert ranked[0].case_number == "A"
+    assert ranked[0].issue_score == 1.0
+    assert ranked[0].rerank_score == approx(0.022)
+    assert ranked[0].start_page == 2
+    assert ranked[0].pdf_url.endswith("a")
+    assert ranked[1].issue_score == 0.0
 
 
 def test_rrf_fusion_combines_vector_and_full_text_ranks():

@@ -18,7 +18,7 @@ from typing import Any
 MODEL_FILENAME = "Qwen3-4B-Instruct-2507-Q4_K_M.gguf"
 DEFAULT_N_CTX = 2048
 DEFAULT_N_GPU_LAYERS = 0
-DEFAULT_N_THREADS = 4
+DEFAULT_N_THREADS = 8
 
 
 class QwenAdapterError(RuntimeError):
