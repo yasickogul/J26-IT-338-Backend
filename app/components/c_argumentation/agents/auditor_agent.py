@@ -2,6 +2,8 @@
 
 from collections.abc import Mapping
 
+from .multi_agent_agents import NeutralAuditorAgent
+
 
 def audit_turn(turn: Mapping[str, object], valid_citation: bool = True) -> dict[str, object]:
     result = dict(turn)
