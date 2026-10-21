@@ -5,6 +5,7 @@ import argparse
 import asyncio
 import json
 import re
+from collections import Counter
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -47,6 +48,8 @@ class LexicalRow:
     lexical_score: float
     lexical_rank: int
 
+KEY_PASSAGES = ("PRO-001-0277", "PRO-001-0295", "CON-003-0014", "EMP-010-0010", "EMP-010-0011", "CON-003-0021")
+
 def _tokens(value: str) -> set[str]:
     return {t for t in re.findall(r"[a-z0-9]+", value.casefold()) if t not in STOP and len(t) > 2}
 
@@ -82,18 +85,56 @@ def _load_queries(path: Path | None) -> list[QueryCase]:
         out.append(QueryCase(str(item.get("query_id", n)), item["query"], ids("target_chunk_ids"), ids("background_chunk_ids")))
     return out
 
-async def _lexical_search(session: Any, query: str, top_k: int, source_id: str | None = None, legal_domain: str | None = None, language: str | None = None) -> list[LexicalRow]:
+def _lexical_vector_sql(representation: str) -> str:
+    if representation == "baseline":
+        return "to_tsvector('simple', coalesce(embedding_text, '') || ' ' || coalesce(text, ''))"
+    if representation == "text_once_normalized":
+        return "setweight(to_tsvector('simple', coalesce(text, '')), 'A') || setweight(to_tsvector('simple', coalesce(metadata ->> 'title', '') || ' ' || coalesce(metadata ->> 'section_label', '')), 'B')"
+    raise ValueError(f"unknown lexical representation: {representation}")
+
+
+async def _lexical_search(session: Any, query: str, top_k: int, representation: str = "baseline", source_id: str | None = None, legal_domain: str | None = None, language: str | None = None) -> list[LexicalRow]:
     lexical_query = _build_lexical_query(query)
     if not lexical_query:
         return []
-    conditions = ["embedding_model = :embedding_model", "to_tsvector('simple', coalesce(embedding_text, '') || ' ' || coalesce(text, '')) @@ to_tsquery('simple', :lexical_query)"]
+    vector_sql = _lexical_vector_sql(representation)
+    normalization = ", 2" if representation == "text_once_normalized" else ""
+    conditions = ["embedding_model = :embedding_model", f"{vector_sql} @@ to_tsquery('simple', :lexical_query)"]
     params: dict[str, Any] = {"embedding_model": MODEL_NAME, "lexical_query": lexical_query, "top_k": top_k}
     for name, value in (("source_id", source_id), ("legal_domain", legal_domain), ("language", language)):
         if value is not None: conditions.append(f"metadata ->> '{name}' = :{name}"); params[name] = value
     table = corpus_table(C3_CORPUS_CONTRACT)
-    stmt = text(f"SELECT chunk_id, original_chunk_id, text, metadata, embedding_text, ts_rank_cd(to_tsvector('simple', coalesce(embedding_text, '') || ' ' || coalesce(text, '')), to_tsquery('simple', :lexical_query)) AS lexical_score FROM {table} WHERE {' AND '.join(conditions)} ORDER BY lexical_score DESC, chunk_id ASC LIMIT :top_k")
+    stmt = text(f"SELECT chunk_id, original_chunk_id, text, metadata, embedding_text, ts_rank_cd({vector_sql}, to_tsquery('simple', :lexical_query){normalization}) AS lexical_score FROM {table} WHERE {' AND '.join(conditions)} ORDER BY lexical_score DESC, chunk_id ASC LIMIT :top_k")
     result = await session.execute(stmt, params)
     return [LexicalRow(r["chunk_id"], r["original_chunk_id"], r["text"], r["metadata"], r["embedding_text"], float(r["lexical_score"]), rank) for rank, r in enumerate(result.mappings(), 1)]
+
+
+async def _key_positions(session: Any, query: str, representation: str, pool: int) -> None:
+    lexical_query = _build_lexical_query(query)
+    if not lexical_query:
+        return
+    vector_sql = _lexical_vector_sql(representation)
+    normalization = ", 2" if representation == "text_once_normalized" else ""
+    table = corpus_table(C3_CORPUS_CONTRACT)
+    statement = text(f"""
+        WITH candidates AS (
+            SELECT chunk_id, text, metadata,
+                   ts_rank_cd({vector_sql}, to_tsquery('simple', :lexical_query){normalization}) AS lexical_score
+            FROM {table}
+            WHERE embedding_model = :embedding_model AND {vector_sql} @@ to_tsquery('simple', :lexical_query)
+        ), ordered AS (
+            SELECT *, row_number() OVER (ORDER BY lexical_score DESC, chunk_id ASC) AS position,
+                   rank() OVER (ORDER BY lexical_score DESC) AS tied_rank
+            FROM candidates
+        )
+        SELECT chunk_id, lexical_score, position, tied_rank, text, metadata,
+               (position <= :pool) AS in_pool
+        FROM ordered WHERE chunk_id = ANY(:chunk_ids) ORDER BY position ASC
+    """)
+    result = await session.execute(statement, {"lexical_query": lexical_query, "embedding_model": MODEL_NAME, "chunk_ids": list(KEY_PASSAGES), "pool": pool})
+    print(f"key_passages representation={representation} pool={pool}")
+    for row in result.mappings():
+        print(f"  chunk={row['chunk_id']} position={row['position']} tied_rank={row['tied_rank']} in_pool={row['in_pool']} score={float(row['lexical_score']):.8f} source={row['metadata'].get('source_id','<missing>')} excerpt={_excerpt(row['text'])!r}")
 
 def _rrf(semantic: list[RetrievalResult], lexical: list[LexicalRow], k: int):
     merged: dict[str, tuple[Any, int | None, int | None]] = {}
@@ -110,8 +151,34 @@ def _page_label(metadata: dict[str, Any]) -> str | None:
     value = metadata.get("page_number")
     if value is not None:
         return str(value)
-    match = re.search(r"PDF page\\s+(\\d+)", str(metadata.get("section_label", "")), re.I)
+    match = re.search(r"PDF page\s+(\d+)", str(metadata.get("section_label", "")), re.I)
     return match.group(1) if match else None
+
+def _matched_terms(query: str, *values: str) -> list[str]:
+    terms = _tokens(query)
+    present = set().union(*(set(re.findall(r"[a-z0-9]+", value.casefold())) for value in values))
+    return sorted(terms.intersection(present))
+
+async def _inspect_chunks(session: Any, query: str, chunk_ids: tuple[str, ...]) -> None:
+    """Print full diagnostic passages and target lexical rank without changing retrieval."""
+    if not chunk_ids:
+        return
+    lexical_query = _build_lexical_query(query)
+    if not lexical_query:
+        print(json.dumps({"passage_diagnostic": "skipped", "reason": "no usable lexical terms"}))
+        return
+    table = corpus_table(C3_CORPUS_CONTRACT)
+    stmt = text(f"SELECT chunk_id, text, embedding_text, metadata, ts_rank_cd(to_tsvector('simple', coalesce(embedding_text, '') || ' ' || coalesce(text, '')), to_tsquery('simple', :lexical_query)) AS lexical_score FROM {table} WHERE embedding_model=:embedding_model AND chunk_id = ANY(:chunk_ids)")
+    result = await session.execute(stmt, {"embedding_model": MODEL_NAME, "lexical_query": lexical_query or "__no_terms__", "chunk_ids": list(chunk_ids)})
+    for row in result.mappings():
+        matched = _matched_terms(query, row["embedding_text"], row["text"])
+        embedding_counts = Counter(re.findall(r"[a-z0-9]+", row["embedding_text"].casefold()))
+        text_counts = Counter(re.findall(r"[a-z0-9]+", row["text"].casefold()))
+        repeated = {term: embedding_counts[term] + text_counts[term] for term in matched if embedding_counts[term] + text_counts[term] > 1}
+        rank_stmt = text(f"SELECT count(*) FROM {table} WHERE embedding_model=:embedding_model AND to_tsvector('simple', coalesce(embedding_text, '') || ' ' || coalesce(text, '')) @@ to_tsquery('simple', :lexical_query) AND ts_rank_cd(to_tsvector('simple', coalesce(embedding_text, '') || ' ' || coalesce(text, '')), to_tsquery('simple', :lexical_query)) > :score")
+        higher = (await session.execute(rank_stmt, {"embedding_model": MODEL_NAME, "lexical_query": lexical_query or "__no_terms__", "score": float(row["lexical_score"])})).scalar_one()
+        print(json.dumps({"passage_diagnostic": row["chunk_id"], "lexical_score": float(row["lexical_score"]), "lexical_rank": int(higher) + 1, "matched_terms": matched, "repeated_query_terms_across_inputs": repeated, "embedding_text_chars": len(row["embedding_text"]), "text_chars": len(row["text"]), "embedding_equals_text": row["embedding_text"] == row["text"]}, sort_keys=True))
+        print(f"FULL embedding_text {row['chunk_id']}:\n{row['embedding_text']}\nFULL text {row['chunk_id']}:\n{row['text']}")
 
 def _print_rows(label: str, rows: list[Any], top_k: int, case: QueryCase):
     print(label)
@@ -135,32 +202,39 @@ async def _adjacent_proposal(session: Any, row: RetrievalResult, bound: int):
     neighbors = []
     for item in result.mappings():
         page = _page_label(item["metadata"])
-        neighbors.append({"chunk_id": item["chunk_id"], "chunk_index": item["chunk_index"], "page": page, "cross_page": bool(anchor_page and page and page != anchor_page)})
+        cross_page = "unknown" if anchor_page is None or page is None else page != anchor_page
+        neighbors.append({"chunk_id": item["chunk_id"], "chunk_index": item["chunk_index"], "page": page, "cross_page": cross_page})
     print(f"  adjacent_proposal_only source={source} anchor={row.chunk_id} anchor_page={anchor_page or '<unknown>'} rows={neighbors} (reading order only; cross_page is explicit; not ranked or included in evidence)")
 
-async def evaluate(cases: list[QueryCase], candidate_k: int, top_k: int, lexical_weight: float, rrf_k: int, adjacent_bound: int):
+async def evaluate(cases: list[QueryCase], candidate_pools: list[int], top_k: int, lexical_weight: float, rrf_k: int, adjacent_bound: int):
     if SessionLocal is None: raise RuntimeError("C3 DATABASE_URL-backed session factory is unavailable")
     async with SessionLocal() as session:
         async with session.begin():
             await session.execute(text("SET TRANSACTION READ ONLY"))
-            print(json.dumps({"strategy":"diagnostic_only_semantic_candidate_rerank_and_rrf","candidate_k":candidate_k,"top_k":top_k,"lexical_weight":lexical_weight,"rrf_k":rrf_k,"query_model":MODEL_NAME,"corpus_contract":C3_CORPUS_CONTRACT,"filters":{"embedding_model":MODEL_NAME,"source_id":None,"legal_domain":None,"language":None},"production_unchanged":True}, sort_keys=True))
+            print(json.dumps({"strategy":"diagnostic_only_lexical_representation_comparison","candidate_pools":candidate_pools,"top_k":top_k,"lexical_weight":lexical_weight,"rrf_k":rrf_k,"query_model":MODEL_NAME,"corpus_contract":C3_CORPUS_CONTRACT,"filters":{"embedding_model":MODEL_NAME,"source_id":None,"legal_domain":None,"language":None},"representations":{"baseline":"embedding_text + text (existing diagnostic baseline; passage duplicated)","text_once_normalized":"text once with title/section metadata at weight B; ts_rank_cd normalization=2"},"production_unchanged":True}, sort_keys=True))
             for case in cases:
                 query = _prepared_query(case.query)
-                semantic = await search(embed_text(query), session=session, corpus_contract=C3_CORPUS_CONTRACT, query_model=MODEL_NAME, top_k=candidate_k, source_id=None, legal_domain=None, language=None)
-                lexical = await _lexical_search(session, query, candidate_k)
-                candidate = _candidate_rank(query, semantic, lexical_weight); fused = _rrf(semantic, lexical, rrf_k)
                 print(f"\n[{case.query_id}] prepared_query={query!r} lexical_query={_build_lexical_query(query)!r} labels={'available' if case.labels_available else 'missing'}")
-                print(f"lexical_candidate_count={len(lexical)}")
-                _print_rows("lexical_top_results:", lexical, top_k, case)
-                _print_rows(f"semantic_top_{top_k}:", semantic, top_k, case); _print_rows(f"candidate_only_rerank_top_{top_k}:", candidate, top_k, case); _print_rows(f"rrf_top_{top_k}:", fused, top_k, case)
-                if semantic: await _adjacent_proposal(session, semantic[0], adjacent_bound)
+                for candidate_k in candidate_pools:
+                    semantic = await search(embed_text(query), session=session, corpus_contract=C3_CORPUS_CONTRACT, query_model=MODEL_NAME, top_k=candidate_k, source_id=None, legal_domain=None, language=None)
+                    print(f"candidate_pool={candidate_k}")
+                    _print_rows(f"semantic_top_{top_k}:", semantic, top_k, case)
+                    for representation in ("baseline", "text_once_normalized"):
+                        lexical = await _lexical_search(session, query, candidate_k, representation=representation)
+                        candidate = _candidate_rank(query, semantic, lexical_weight); fused = _rrf(semantic, lexical, rrf_k)
+                        print(f"representation={representation} lexical_candidate_count={len(lexical)}")
+                        _print_rows("lexical_top_results:", lexical, top_k, case)
+                        _print_rows("candidate_only_rerank_top_results:", candidate, top_k, case)
+                        _print_rows("rrf_top_results:", fused, top_k, case)
+                        await _key_positions(session, query, representation, candidate_k)
+                    if semantic: await _adjacent_proposal(session, semantic[0], adjacent_bound)
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description=__doc__); parser.add_argument("--queries-file", type=Path); parser.add_argument("--candidate-k", type=int, default=20); parser.add_argument("--top-k", type=int, default=5); parser.add_argument("--lexical-weight", type=float, default=.25); parser.add_argument("--rrf-k", type=int, default=60); parser.add_argument("--adjacent-bound", type=int, default=1)
+    parser = argparse.ArgumentParser(description=__doc__); parser.add_argument("--queries-file", type=Path); parser.add_argument("--candidate-pools", nargs="+", type=int, default=[20, 50]); parser.add_argument("--top-k", type=int, default=5); parser.add_argument("--lexical-weight", type=float, default=.25); parser.add_argument("--rrf-k", type=int, default=60); parser.add_argument("--adjacent-bound", type=int, default=1)
     args = parser.parse_args()
-    if not 1 <= args.top_k <= args.candidate_k <= 50: parser.error("require 1 <= --top-k <= --candidate-k <= 50")
+    if not args.candidate_pools or any(not 1 <= value <= 50 for value in args.candidate_pools) or args.top_k > min(args.candidate_pools): parser.error("candidate pools must be between 1 and 50 and include top-k")
     if not 0 <= args.lexical_weight <= 1: parser.error("--lexical-weight must be between 0 and 1")
     if args.rrf_k < 1 or not 0 <= args.adjacent_bound <= 5: parser.error("--rrf-k must be positive and --adjacent-bound between 0 and 5")
-    asyncio.run(evaluate(_load_queries(args.queries_file), args.candidate_k, args.top_k, args.lexical_weight, args.rrf_k, args.adjacent_bound)); return 0
+    asyncio.run(evaluate(_load_queries(args.queries_file), args.candidate_pools, args.top_k, args.lexical_weight, args.rrf_k, args.adjacent_bound)); return 0
 
 if __name__ == "__main__": raise SystemExit(main())

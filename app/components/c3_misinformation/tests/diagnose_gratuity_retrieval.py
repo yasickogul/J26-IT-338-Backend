@@ -9,6 +9,8 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+import re
+from collections import Counter
 from typing import Any
 
 import numpy as np
@@ -29,6 +31,10 @@ DEFAULT_CLAIM = (
     "they have worked for their employer."
 )
 COMPARISON_SOURCE_ID = "EMP-010"
+CONSISTENCY_CHUNKS = (
+    "PRO-001-0277", "PRO-001-0295", "CON-003-0014", "EMP-010-0010", "EMP-010-0011",
+)
+STOPWORDS = {"a", "an", "and", "are", "for", "from", "has", "have", "in", "is", "of", "on", "the", "to", "under", "with"}
 
 
 def prepare_retrieval_query(claim: str) -> tuple[str, str]:
@@ -81,6 +87,66 @@ def _parse_vector(value: Any) -> np.ndarray:
     if isinstance(value, (list, tuple)):
         return np.asarray(value, dtype=np.float32)
     return np.asarray(value, dtype=np.float32)
+
+
+def _lexical_query(value: str) -> str:
+    terms = {term for term in re.findall(r"[a-z0-9]+", value.casefold()) if term not in STOPWORDS and len(term) > 2}
+    return " | ".join(sorted(terms))
+
+
+async def _consistency_checks(session: Any, query: str, query_vector: np.ndarray) -> None:
+    """Compare fresh vectors, Python cosine, SQL distance, lexical rank, and duplication."""
+    ids = list(CONSISTENCY_CHUNKS)
+    vector_literal = "[" + ",".join(repr(float(value)) for value in query_vector) + "]"
+    rows = (await session.execute(text(
+        "SELECT chunk_id, embedding_text, text, embedding_model, embedding::text AS stored_embedding, "
+        "embedding <=> CAST(:query_embedding AS vector) AS sql_distance "
+        "FROM c3.legal_chunks WHERE embedding_model = :embedding_model AND chunk_id = ANY(:chunk_ids) ORDER BY chunk_id"
+    ), {"chunk_ids": ids, "query_embedding": vector_literal, "embedding_model": MODEL_NAME})).mappings().all()
+    lexical_query = _lexical_query(query)
+    print(f"\nConsistency checks (stored model={MODEL_NAME}, lexical_query={lexical_query!r})")
+    for row in rows:
+        stored = _parse_vector(row["stored_embedding"])
+        fresh = embed_text(row["embedding_text"])
+        cosine = float(np.dot(stored, fresh) / (np.linalg.norm(stored) * np.linalg.norm(fresh)))
+        max_abs = float(np.max(np.abs(stored - fresh)))
+        query_cosine = float(np.dot(query_vector, stored) / (np.linalg.norm(query_vector) * np.linalg.norm(stored)))
+        embedding_terms = Counter(re.findall(r"[a-z0-9]+", row["embedding_text"].casefold()))
+        text_terms = Counter(re.findall(r"[a-z0-9]+", row["text"].casefold()))
+        query_terms = set(lexical_query.replace(" | ", " ").split())
+        embedding_hits = sum(embedding_terms[term] for term in query_terms)
+        text_hits = sum(text_terms[term] for term in query_terms)
+        print(json.dumps({
+            "chunk": row["chunk_id"], "model": row["embedding_model"],
+            "stored_vs_fresh_cosine": cosine, "stored_vs_fresh_max_abs_diff": max_abs,
+            "query_vs_stored_python_cosine": query_cosine,
+            "query_vs_stored_sql_similarity": 1.0 - float(row["sql_distance"]),
+            "sql_distance": float(row["sql_distance"]),
+            "embedding_text_equals_text": row["embedding_text"] == row["text"],
+            "embedding_text_tokens": sum(embedding_terms.values()), "text_tokens": sum(text_terms.values()),
+            "query_term_hits_embedding_text": embedding_hits, "query_term_hits_text": text_hits,
+            "query_term_hits_concatenated": embedding_hits + text_hits,
+        }, sort_keys=True))
+    if lexical_query:
+        table = "c3.legal_chunks"
+        ranked = (await session.execute(text(f"""
+            WITH candidates AS (
+                SELECT chunk_id,
+                       ts_rank_cd(to_tsvector('simple', coalesce(embedding_text, '') || ' ' || coalesce(text, '')), to_tsquery('simple', :lexical_query)) AS score
+                FROM {table}
+                WHERE embedding_model = :embedding_model
+                  AND to_tsvector('simple', coalesce(embedding_text, '') || ' ' || coalesce(text, '')) @@ to_tsquery('simple', :lexical_query)
+            ), ordered AS (
+                SELECT chunk_id, score, row_number() OVER (ORDER BY score DESC, chunk_id ASC) AS deterministic_rank,
+                       count(*) OVER (PARTITION BY score) AS tied_score_count
+                FROM candidates
+            )
+            SELECT chunk_id, score, deterministic_rank, tied_score_count
+            FROM ordered WHERE chunk_id = ANY(:chunk_ids) ORDER BY deterministic_rank
+        """), {"lexical_query": lexical_query, "embedding_model": MODEL_NAME, "chunk_ids": ids})).mappings().all()
+        print("Lexical deterministic ranks (score DESC, chunk_id ASC):")
+        for row in ranked:
+            print(json.dumps({"chunk": row["chunk_id"], "lexical_score": float(row["score"]), "lexical_rank": int(row["deterministic_rank"]), "tied_score_count": int(row["tied_score_count"])}, sort_keys=True))
 
 
 async def _sample_vector_checks(session: Any, *, sample_size: int) -> None:
@@ -160,6 +226,7 @@ async def diagnose(claim: str, *, sample_size: int) -> None:
             await _print_embedding_inputs(session, normal[:10])
             await _print_embedding_inputs(session, comparison[:4])
             await _sample_vector_checks(session, sample_size=sample_size)
+            await _consistency_checks(session, query, query_vector)
 
 
 def main() -> int:
